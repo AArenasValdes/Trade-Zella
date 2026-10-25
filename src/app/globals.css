@@ -1,8 +1,9 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: dark;
+  --background: #09090b;
+  --foreground: #f4f4f5;
 }
 
 @theme inline {
@@ -12,15 +13,558 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+body.intro-scroll-lock {
+  overflow: hidden;
+}
+
+.martin-intro {
+  isolation: isolate;
+  scrollbar-color: #3f3f46 #09090b;
+}
+
+.martin-intro__grain,
+.martin-intro__grid {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.martin-intro__grain {
+  z-index: -1;
+  opacity: 0.075;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.92' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.3'/%3E%3C/svg%3E");
+}
+
+.martin-intro__grid {
+  z-index: -2;
+  opacity: 0.14;
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.035) 1px, transparent 1px);
+  background-size: 72px 72px;
+  mask-image: linear-gradient(to bottom, black, transparent 90%);
+}
+
+.martin-intro__stage {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 100svh;
+  padding: clamp(18px, 3.3vh, 32px) clamp(20px, 5vw, 72px) clamp(24px, 5vh, 48px);
+}
+
+.martin-intro__skip-row {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 44px;
+}
+
+.martin-intro__skip,
+.martin-intro__replay,
+.martin-intro__music {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border: 1px solid transparent;
+  color: #a1a1aa;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  transition: color 180ms ease, border-color 180ms ease, background-color 180ms ease;
+}
+
+.martin-intro__skip {
+  padding: 0 12px;
+}
+
+.martin-intro__skip-row {
+  gap: 8px;
+}
+
+.martin-intro__music {
+  gap: 8px;
+  padding: 0 12px;
+  color: #a1a1aa;
+  font-size: 11px;
+}
+
+.martin-intro__music:hover,
+.martin-intro__music[aria-pressed='true'] {
+  color: #f4f4f5;
+}
+
+.martin-intro__skip:hover,
+.martin-intro__replay:hover {
+  color: #fafafa;
+}
+
+.martin-intro__skip:focus-visible,
+.martin-intro__music:focus-visible,
+.martin-intro__continue:focus-visible,
+.martin-intro__login:focus-visible,
+.martin-intro__replay:focus-visible,
+.martin-intro__form input:focus-visible {
+  outline: 2px solid #e4e4e7;
+  outline-offset: 3px;
+}
+
+.martin-intro__story {
+  position: relative;
+  display: grid;
+  min-height: calc(100svh - 112px);
+  place-items: center;
+}
+
+.martin-intro__scene {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  visibility: hidden;
+  opacity: 0;
+  text-align: center;
+}
+
+.martin-intro__origin,
+.martin-intro__purpose,
+.martin-intro__phrase,
+.martin-intro__identity {
+  flex-direction: column;
+}
+
+.martin-intro__origin h1 {
+  margin: 14px 0 0;
+  color: #f4f4f5;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: clamp(26px, 5vw, 45px);
+  font-weight: 300;
+  letter-spacing: 0.075em;
+}
+
+.martin-intro__eyebrow {
+  color: #71717a;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.24em;
+}
+
+.martin-intro__chart-scene {
+  padding-inline: clamp(0px, 5vw, 56px);
+}
+
+.martin-intro__chart {
+  position: relative;
+  width: min(100%, 1010px);
+  overflow: hidden;
+}
+
+.martin-intro__candles {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+
+.martin-intro__candles > path {
+  stroke: rgb(255 255 255 / 0.07);
+  stroke-width: 1;
+}
+
+.martin-intro__wick {
+  stroke: #a1a1aa;
+  stroke-width: 1.5;
+}
+
+.martin-intro__candle--white {
+  fill: #f4f4f5;
+  stroke: #f4f4f5;
+  stroke-width: 1;
+}
+
+.martin-intro__candle--black {
+  fill: #09090b;
+  stroke: #d4d4d8;
+  stroke-width: 1.5;
+}
+
+.martin-intro__chart-note {
+  position: absolute;
+  right: 0;
+  bottom: 1px;
+  color: #71717a;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  letter-spacing: 0.15em;
+}
+
+.martin-intro__phrase p,
+.martin-intro__purpose p {
+  max-width: 760px;
+  margin: 0;
+  color: #e4e4e7;
+  font-size: clamp(23px, 4vw, 38px);
+  font-weight: 300;
+  letter-spacing: -0.035em;
+  line-height: 1.35;
+}
+
+.martin-intro__purpose-line {
+  width: min(42vw, 280px);
+  height: 1px;
+  margin-bottom: clamp(26px, 5vh, 44px);
+  background: linear-gradient(90deg, transparent, #a1a1aa, transparent);
+  transform-origin: center;
+}
+
+.martin-intro__brand-logo {
+  position: relative;
+  width: clamp(190px, 27vw, 286px);
+  aspect-ratio: 1;
+  overflow: hidden;
+}
+
+.martin-intro__light-sweep {
+  position: absolute;
+  inset: -12% -30%;
+  width: 36%;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.34), transparent);
+  mix-blend-mode: screen;
+  transform: skewX(-17deg);
+}
+
+.martin-intro__wordmark {
+  margin: 15px 0 0;
+  color: #e4e4e7;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+}
+
+.martin-intro__wordmark span {
+  color: #71717a;
+}
+
+.martin-intro__identity-dedication {
+  margin: 42px 0 0;
+  color: #a1a1aa;
+  font-size: 13px;
+  font-weight: 300;
+  letter-spacing: 0.06em;
+}
+
+.martin-intro__identity-dedication span {
+  padding-inline: 5px;
+  color: #52525b;
+}
+
+.martin-intro__dedication {
+  flex-direction: column;
+  justify-content: center;
+  padding: 8px 0 22px;
+}
+
+.martin-intro__dedication-mark,
+.martin-intro__access-mark {
+  width: 55px;
+  height: 55px;
+  overflow: hidden;
+  opacity: 0;
+}
+
+.martin-intro__dedication .martin-intro__eyebrow {
+  margin: 16px 0 18px;
+  color: #a1a1aa;
+  font-size: 10px;
+}
+
+.martin-intro__letter {
+  display: flex;
+  width: min(100%, 680px);
+  flex-direction: column;
+  gap: clamp(9px, 1.5vh, 15px);
+  color: #d4d4d8;
+  font-size: clamp(13px, 1.45vw, 15px);
+  font-weight: 300;
+  line-height: 1.75;
+  text-align: center;
+}
+
+.martin-intro__letter > p {
+  margin: 0;
+  opacity: 0;
+}
+
+.martin-intro__signoff {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 4px;
+  color: #f4f4f5;
+  line-height: 1.5;
+}
+
+.martin-intro__signoff strong:first-child {
+  font-weight: 400;
+}
+
+.martin-intro__signoff strong:last-child {
+  font-family: Georgia, serif;
+  font-size: 18px;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+}
+
+.martin-intro__dedication-actions {
+  display: flex;
+  min-height: 52px;
+  align-items: flex-end;
+  justify-content: center;
+  padding-top: 15px;
+}
+
+.martin-intro__continue,
+.martin-intro__login {
+  display: inline-flex;
+  min-height: 46px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 1px solid #e4e4e7;
+  background: #e4e4e7;
+  color: #09090b;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background-color 180ms ease, color 180ms ease, border-color 180ms ease;
+}
+
+.martin-intro__continue {
+  min-width: 160px;
+  padding: 0 20px;
+}
+
+.martin-intro__continue:hover,
+.martin-intro__login:hover {
+  border-color: #fafafa;
+  background: #fafafa;
+}
+
+.martin-intro__reading-cue {
+  color: #71717a;
+  font-size: 11px;
+}
+
+.martin-intro__access {
+  display: none;
+  width: min(100%, 370px);
+  align-self: center;
+  justify-self: center;
+  padding: 6px 0 40px;
+  text-align: center;
+}
+
+.martin-intro__access-mark {
+  width: 58px;
+  height: 58px;
+  margin: 0 auto 5px;
+  opacity: 1;
+}
+
+.martin-intro__access .martin-intro__wordmark {
+  margin: 8px 0 24px;
+  font-size: 10px;
+}
+
+.martin-intro__access h1 {
+  margin: 0;
+  color: #f4f4f5;
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+}
+
+.martin-intro__access-subtitle {
+  margin: 8px 0 30px;
+  color: #71717a;
+  font-size: 13px;
+}
+
+.martin-intro__form {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  text-align: left;
+}
+
+.martin-intro__form label {
+  margin-top: 9px;
+  color: #a1a1aa;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.martin-intro__form input {
+  width: 100%;
+  min-height: 46px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 2px;
+  background: rgb(0 0 0 / 0.35);
+  padding: 0 13px;
+  color: #f4f4f5;
+  font-size: 14px;
+}
+
+.martin-intro__password {
+  position: relative;
+}
+
+.martin-intro__password input {
+  padding-right: 42px;
+}
+
+.martin-intro__password svg {
+  position: absolute;
+  top: 15px;
+  right: 14px;
+  color: #71717a;
+}
+
+.martin-intro__preview-note {
+  margin: 7px 0 8px;
+  border-left: 1px solid #71717a;
+  padding: 2px 0 2px 11px;
+  color: #a1a1aa;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.martin-intro__login {
+  width: 100%;
+  min-height: 48px;
+  border-radius: 2px;
+}
+
+.martin-intro__replay {
+  width: 100%;
+  margin-top: 16px;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 4px;
+}
+
+.martin-intro[data-step='dedication'] [data-scene='dedication'] {
+  visibility: visible;
+  opacity: 1;
+}
+
+.martin-intro[data-step='dedication'] [data-dedication-mark],
+.martin-intro[data-step='dedication'] [data-dedication-copy],
+.martin-intro[data-step='dedication'] [data-dedication-signoff] {
+  visibility: visible;
+  opacity: 1;
+  transform: none;
+}
+
+.martin-intro[data-step='access'] .martin-intro__story {
+  display: none;
+}
+
+.martin-intro[data-step='access'] .martin-intro__access {
+  display: block;
+  animation: martin-access-in 800ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes martin-access-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 640px) {
+  .martin-intro__stage {
+    grid-template-rows: 40px 1fr;
+    padding: 12px 22px max(20px, env(safe-area-inset-bottom));
+  }
+
+  .martin-intro__story {
+    min-height: calc(100svh - 72px);
+  }
+
+  .martin-intro__chart-scene {
+    padding-inline: 0;
+  }
+
+  .martin-intro__chart-note {
+    right: 3px;
+    bottom: -19px;
+    font-size: 7px;
+    letter-spacing: 0.08em;
+  }
+
+  .martin-intro__dedication {
+    padding: 4px 0 12px;
+  }
+
+  .martin-intro__dedication-mark {
+    width: 42px;
+    height: 42px;
+  }
+
+  .martin-intro__dedication .martin-intro__eyebrow {
+    margin: 10px 0 12px;
+    font-size: 9px;
+  }
+
+  .martin-intro__letter {
+    gap: 9px;
+    font-size: 12px;
+    line-height: 1.58;
+  }
+
+  .martin-intro__dedication-actions {
+    min-height: 44px;
+    padding-top: 10px;
+  }
+
+  .martin-intro__continue {
+    min-height: 44px;
+  }
+
+  .martin-intro__access {
+    padding-bottom: 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+  }
+
+  .martin-intro[data-step='access'] .martin-intro__access {
+    animation: none;
+  }
+
+  .martin-intro *,
+  .martin-intro *::before,
+  .martin-intro *::after {
+    animation-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }
