@@ -148,11 +148,11 @@ function TradeFormModalContent({
         outcomeMode: editingTrade.status === 'Win' ? 'TP' : 'SL',
         rMultiple: (() => {
           const val = Math.abs(editingTrade.rMultiple);
-          if (Number.isFinite(val) && val > 0) {
+          if (Number.isFinite(val)) {
             return Number(val.toFixed(2)).toString();
           }
           const fallback = Number(editingTrade.plannedRR);
-          if (Number.isFinite(fallback) && fallback > 0) {
+          if (Number.isFinite(fallback)) {
             return Number(fallback.toFixed(2)).toString();
           }
           return '2.0';
@@ -281,7 +281,13 @@ function TradeFormModalContent({
       return;
     }
 
-    if (!/^\d+(?:[.,]\d{1,2})?$/.test(form.rMultiple.trim()) || !Number.isFinite(rMultipleNum) || rMultipleNum <= 0) {
+    const isUnchangedHistoricalZero = Boolean(
+      editingTrade &&
+      Number(Math.abs(editingTrade.rMultiple).toFixed(2)) === 0 &&
+      rMultipleNum === 0
+    );
+
+    if (!/^\d+(?:[.,]\d{1,2})?$/.test(form.rMultiple.trim()) || !Number.isFinite(rMultipleNum) || (rMultipleNum <= 0 && !isUnchangedHistoricalZero)) {
       setFormError('Ingresa un R-Multiple positivo con hasta dos decimales (ej: 1,25 o 2.50).');
       return;
     }
@@ -370,8 +376,8 @@ function TradeFormModalContent({
       commission: finalCommission,
       commissionUnmeasured: finalCommissionUnmeasured,
       netPnl: finalNetPnl,
-      plannedRR: Math.abs(rMultipleNum),
-      rMultiple: signedR,
+      plannedRR: isUnchangedHistoricalZero && editingTrade ? editingTrade.plannedRR : Number(Math.abs(rMultipleNum).toFixed(2)),
+      rMultiple: isUnchangedHistoricalZero && editingTrade ? editingTrade.rMultiple : Number(signedR.toFixed(2)),
       status: form.outcomeMode === 'TP' ? 'Win' : 'Loss',
       killzone:
         form.selectedWindow === 'window_1'
@@ -710,9 +716,9 @@ function TradeFormModalContent({
                 required
                 value={form.rMultiple}
                 onChange={(e) => {
-                  const next = e.target.value;
-                  if (/^\d*(?:[.,]\d{0,2})?$/.test(next)) {
-                    setForm((prev) => ({ ...prev, rMultiple: next }));
+                  const sanitized = e.target.value.trim().replace(/\s+/g, '');
+                  if (/^\d*(?:[.,]\d{0,2})?$/.test(sanitized)) {
+                    setForm((prev) => ({ ...prev, rMultiple: sanitized }));
                   }
                 }}
                 placeholder="Ej: 1,25 o 2.50"
