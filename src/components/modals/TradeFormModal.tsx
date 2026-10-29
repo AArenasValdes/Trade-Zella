@@ -193,7 +193,9 @@ function TradeFormModalContent({
   // Calculate real-time derived return % and derived Net P&L
   const riskNum = parseFloat(form.riskPercentUsed) || 1.0;
   const normalizedRMultiple = form.rMultiple.trim().replace(',', '.');
-  const rMultipleNum = Number(normalizedRMultiple);
+  const parsedRMultiple = Number(normalizedRMultiple);
+  // A partial value (e.g. just a comma) must not render NaN% while typing.
+  const rMultipleNum = Number.isFinite(parsedRMultiple) ? parsedRMultiple : 0;
   const signedR = form.outcomeMode === 'TP' ? Math.abs(rMultipleNum) : -Math.abs(rMultipleNum);
   const derivedReturnPct = Number((riskNum * signedR).toFixed(2));
   const derivedPnl =
