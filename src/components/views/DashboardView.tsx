@@ -208,6 +208,16 @@ export function DashboardView() {
                 tickFormatter={(val) => `${val >= 0 ? '+' : ''}${val}%`}
               />
               <Tooltip
+                labelFormatter={(_label, payload) => {
+                  const point = (payload?.[0]?.payload ?? null) as EquityPointPct | null;
+                  if (!point) return 'Operación';
+                  if (point.tradeIndex === 0) return `Inicio de la curva · ${point.date}`;
+                  const timeLabel = point.timePrecision === 'window'
+                    ? point.operationalWindow === 'window_2' ? '10:35–11:00' : '09:30–10:35'
+                    : point.time;
+                  const suffix = point.timePrecision === 'window' ? ' NY (ventana, no hora exacta)' : ' NY';
+                  return `${point.date} · ${timeLabel}${suffix} · ${point.symbol}`;
+                }}
                 contentStyle={{
                   backgroundColor: '#09090b',
                   borderRadius: '12px',
@@ -221,11 +231,12 @@ export function DashboardView() {
                     return ['0.00% (Inicio sesión)', 'Retorno Acumulado'];
                   }
                   const retStr = formatReturnPct(pt.cumulativeReturnPct);
-                  const pnlStr = pt.pnl >= 0 ? `+$${pt.pnl.toFixed(2)}` : `-$${Math.abs(pt.pnl).toFixed(2)}`;
+                  const pnlStr = `${pt.estimatedPnl ? '≈' : ''}${pt.pnl >= 0 ? '+' : '-'}${Math.abs(pt.pnl).toFixed(2)}`;
+                  const cumulativePnl = `${pt.cumulativePnl >= 0 ? '+' : '-'}${Math.abs(pt.cumulativePnl).toFixed(2)}`;
                   const tradeRetStr = formatReturnPct(pt.tradeReturnPct);
                   return [
-                    `${retStr} (${pnlStr} acumulado: $${pt.cumulativePnl.toFixed(2)}) · Trade: ${tradeRetStr}`,
-                    'Retorno Acumulado',
+                    `Trade: ${tradeRetStr} (${pnlStr}) · Acumulado: ${retStr} (${cumulativePnl}) · DD: -${pt.drawdownPct.toFixed(2)}%`,
+                    'Resultado',
                   ];
                 }}
               />
