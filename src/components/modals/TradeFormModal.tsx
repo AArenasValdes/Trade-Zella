@@ -192,7 +192,8 @@ function TradeFormModalContent({
 
   // Calculate real-time derived return % and derived Net P&L
   const riskNum = parseFloat(form.riskPercentUsed) || 1.0;
-  const rMultipleNum = parseFloat(form.rMultiple) || 0;
+  const normalizedRMultiple = form.rMultiple.trim().replace(',', '.');
+  const rMultipleNum = Number(normalizedRMultiple);
   const signedR = form.outcomeMode === 'TP' ? Math.abs(rMultipleNum) : -Math.abs(rMultipleNum);
   const derivedReturnPct = Number((riskNum * signedR).toFixed(2));
   const derivedPnl =
@@ -268,8 +269,8 @@ function TradeFormModalContent({
       return;
     }
 
-    if (rMultipleNum <= 0) {
-      setFormError('Ingresa un valor de R-Multiple válido mayor a 0 (ej: 2.0 o 1.0).');
+    if (!/^\d+(?:[.,]\d{1,2})?$/.test(form.rMultiple.trim()) || !Number.isFinite(rMultipleNum) || rMultipleNum <= 0) {
+      setFormError('Ingresa un R-Multiple positivo con hasta dos decimales (ej: 1,25 o 2.50).');
       return;
     }
 
@@ -692,13 +693,17 @@ function TradeFormModalContent({
                 </span>
               </div>
               <input
-                type="number"
-                step="0.1"
-                min="0.1"
+                type="text"
+                inputMode="decimal"
                 required
                 value={form.rMultiple}
-                onChange={(e) => setForm({ ...form, rMultiple: e.target.value })}
-                placeholder="Ej: 2.0 o 1.0"
+                onChange={(e) => {
+                  const next = e.target.value;
+                  if (/^\d*(?:[.,]\d{0,2})?$/.test(next)) {
+                    setForm((prev) => ({ ...prev, rMultiple: next }));
+                  }
+                }}
+                placeholder="Ej: 1,25 o 2.50"
                 className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 text-zinc-100 font-bold font-mono focus:outline-none focus:ring-2 ${theme.ringClass}`}
               />
               <span className="text-[10px] text-zinc-500 block mt-0.5">
