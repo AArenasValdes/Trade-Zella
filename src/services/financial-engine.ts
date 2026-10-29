@@ -18,6 +18,10 @@ export interface EquityPointPct {
   tradeLabel: string;
   date: string;
   time: string;
+  /** 'window' means the saved time is representative, not an exact execution timestamp. */
+  timePrecision?: Trade['timePrecision'];
+  operationalWindow?: Trade['operationalWindow'];
+  estimatedPnl?: boolean;
   symbol: string;
   direction?: string;
   pnl: number;
@@ -370,6 +374,9 @@ export function calculatePercentageEquityCurve(
       tradeLabel: `#${i + 1}`,
       date,
       time,
+      timePrecision: t.timePrecision,
+      operationalWindow: t.operationalWindow,
+      estimatedPnl: t.calculationMode === 'derived_r',
       symbol: t.symbol,
       direction: t.direction,
       pnl: t.netPnl,
