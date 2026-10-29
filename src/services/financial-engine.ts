@@ -22,6 +22,7 @@ export interface EquityPointPct {
   timePrecision?: Trade['timePrecision'];
   operationalWindow?: Trade['operationalWindow'];
   estimatedPnl?: boolean;
+  hasEstimatedInCumulative?: boolean;
   symbol: string;
   direction?: string;
   pnl: number;
@@ -314,6 +315,7 @@ export function calculatePercentageEquityCurve(
   );
 
   let cumulativePnl = 0;
+  let hasEstimatedInCumulative = false;
   let peakEquity = referenceCapital;
   let maxDrawdownPct = 0;
   let bestTradeReturnPct: number | null = null;
@@ -338,6 +340,10 @@ export function calculatePercentageEquityCurve(
 
   for (let i = 0; i < sortedTrades.length; i++) {
     const t = sortedTrades[i];
+    const isEstimated = t.calculationMode === 'derived_r';
+    if (isEstimated) {
+      hasEstimatedInCumulative = true;
+    }
     cumulativePnl += t.netPnl;
     const currentEquity = referenceCapital + cumulativePnl;
 
@@ -376,7 +382,8 @@ export function calculatePercentageEquityCurve(
       time,
       timePrecision: t.timePrecision,
       operationalWindow: t.operationalWindow,
-      estimatedPnl: t.calculationMode === 'derived_r',
+      estimatedPnl: isEstimated,
+      hasEstimatedInCumulative,
       symbol: t.symbol,
       direction: t.direction,
       pnl: t.netPnl,

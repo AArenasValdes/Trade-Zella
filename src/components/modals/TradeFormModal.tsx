@@ -146,7 +146,17 @@ function TradeFormModalContent({
             : '1.0'
         ) as '1.0' | '1.5' | '2.0',
         outcomeMode: editingTrade.status === 'Win' ? 'TP' : 'SL',
-        rMultiple: Math.abs(editingTrade.rMultiple).toString() || '2.0',
+        rMultiple: (() => {
+          const val = Math.abs(editingTrade.rMultiple);
+          if (Number.isFinite(val) && val > 0) {
+            return Number(val.toFixed(2)).toString();
+          }
+          const fallback = Number(editingTrade.plannedRR);
+          if (Number.isFinite(fallback) && fallback > 0) {
+            return Number(fallback.toFixed(2)).toString();
+          }
+          return '2.0';
+        })(),
         playbookId: editingTrade.playbookId || '',
         pdArrays: editingTrade.pdArrays || [],
         checklistCompleted: editingTrade.checklistCompleted || [],
@@ -313,7 +323,7 @@ function TradeFormModalContent({
     if (isHistoricalMonetary && editingTrade) {
       // Check if user changed risk or R-multiple
       const riskChanged = editingTrade.riskPercentUsed !== riskNum;
-      const rChanged = Math.abs(editingTrade.rMultiple) !== rMultipleNum;
+      const rChanged = Number(Math.abs(editingTrade.rMultiple).toFixed(2)) !== Number(rMultipleNum.toFixed(2));
       const outcomeChanged = (editingTrade.status === 'Win' ? 'TP' : 'SL') !== form.outcomeMode;
 
       if (!riskChanged && !rChanged && !outcomeChanged) {
