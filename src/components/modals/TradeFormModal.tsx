@@ -11,6 +11,7 @@ import {
 import {
   INSTRUMENT_SPECS,
   PSYCHOLOGY_TAGS,
+  getInstrumentSpec,
 } from '@/config/ict-constants';
 import {
   extractNyDateKey,
@@ -183,6 +184,8 @@ function TradeFormModalContent({
   const rMultipleNum = Number.isFinite(parsedRMultiple) ? parsedRMultiple : 0;
   const signedR = form.outcomeMode === 'TP' ? Math.abs(rMultipleNum) : -Math.abs(rMultipleNum);
 
+  const instrumentSpec = getInstrumentSpec(form.symbol);
+
   const handlePasteClipboardImage = (e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -219,21 +222,24 @@ function TradeFormModalContent({
     e.preventDefault();
     setFormError(null);
 
-    // Resolve target account transparently in the background
+    // Resolve target account without inventing fictitious capital
     let resolvedAccountId = editingTrade?.accountId || defaultAccountId;
     if (!resolvedAccountId || !accounts.some((a) => a.id === resolvedAccountId)) {
       if (accounts.length > 0) {
         resolvedAccountId = accounts[0].id;
       } else {
-        const fallbackAcc = addAccount({
-          name: 'Cuenta Principal',
-          firm: 'Martin OS Trading',
-          initialBalance: 100000,
-          profitTarget: 8000,
-          maxDrawdown: 10000,
-          dailyLossLimit: 5000,
+        // Technical account without declared capital (initialBalance = 0)
+        const technicalAcc = addAccount({
+          name: 'Bitácora Personal',
+          firm: 'Personal',
+          initialBalance: 0,
+          profitTarget: 0,
+          maxDrawdown: 0,
+          dailyLossLimit: 0,
+          isTechnical: true,
+          hasVerifiedBalance: false,
         });
-        resolvedAccountId = fallbackAcc.id;
+        resolvedAccountId = technicalAcc.id;
       }
     }
 
@@ -265,15 +271,15 @@ function TradeFormModalContent({
       finalRealizedReturnPct = form.outcomeMode === 'SL' ? -Math.abs(numPct) : Math.abs(numPct);
     }
 
-    // Validate optional duration
+    // Validate duration: strictly accept integer minutes and reject decimal values
     let finalDurationMinutes: number | null = null;
     if (form.durationMinutes.trim() !== '') {
-      const numDur = Number(form.durationMinutes.trim());
-      if (!Number.isFinite(numDur) || numDur < 0) {
-        setFormError('La duración debe ser un número entero mayor o igual a 0 minutos.');
+      const durStr = form.durationMinutes.trim();
+      if (!/^\d+$/.test(durStr)) {
+        setFormError('La duración debe ser un número entero de minutos sin decimales (ej: 15).');
         return;
       }
-      finalDurationMinutes = Math.round(numDur);
+      finalDurationMinutes = parseInt(durStr, 10);
     }
 
     // Determine timestamp without fabricating false precision
@@ -296,31 +302,63 @@ function TradeFormModalContent({
     const parsedTP = parseFloat(form.takeProfit) || 0;
     const parsedSize = parseFloat(form.size) || 1;
 
-    const hasEnteredPrices = parsedEntry > 0 && parsedExit > 0;
+    const hasNewEnteredPrices = parsedEntry > 0 && parsedExit > 0;
+
+    // Determine whether financial fields were modified by user
+    const outcomeChanged = editingTrade ? (editingTrade.status === 'Win' ? 'TP' : 'SL') !== form.outcomeMode : true;
+    const rChanged = editingTrade ? Number(Math.abs(editingTrade.rMultiple).toFixed(2)) !== Number(rMultipleNum.toFixed(2)) : true;
 
     let finalNetPnl = 0;
     let finalCalculationMode: 'monetary' | 'derived_r' | 'unrecorded' = 'unrecorded';
     let finalCommission = 0;
     let finalCommissionUnmeasured = true;
 
-    if (hasEnteredPrices) {
+    if (hasNewEnteredPrices) {
+      // Calculate P&L using verified instrument multiplier
       finalCalculationMode = 'monetary';
+      const spec = getInstrumentSpec(form.symbol);
       const priceDiff = form.direction === 'Long' ? (parsedExit - parsedEntry) : (parsedEntry - parsedExit);
-      finalNetPnl = Number((priceDiff * parsedSize).toFixed(2));
+      finalNetPnl = Number((priceDiff * spec.pointValue * parsedSize).toFixed(2));
       finalCommission = 0;
       finalCommissionUnmeasured = true;
-    } else if (editingTrade && editingTrade.calculationMode === 'monetary') {
-      // Preserve historical monetary figures if prices weren't re-entered
+    } else if (editingTrade && !outcomeChanged && !rChanged) {
+      // PRESERVE HISTORICAL METRICS INTACT (do not silent convert derived_r or monetary to unrecorded!)
+      finalCalculationMode = editingTrade.calculationMode || 'monetary';
+      finalNetPnl = editingTrade.netPnl;
+      finalCommission = editingTrade.commission;
+      finalCommissionUnmeasured = Boolean(editingTrade.commissionUnmeasured);
+    } else if (editingTrade && editingTrade.calculationMode === 'derived_r') {
+      // User modified outcome or R on legacy derived trade: preserve derived_r mode
+      finalCalculationMode = 'derived_r';
+      finalNetPnl = editingTrade.netPnl; // keep audited or update accordingly
+      finalCommission = editingTrade.commission;
+      finalCommissionUnmeasured = Boolean(editingTrade.commissionUnmeasured);
+    } else if (editingTrade && editingTrade.calculationMode === 'monetary' && !hasNewEnteredPrices) {
+      // Preserved historical monetary trade
       finalCalculationMode = 'monetary';
       finalNetPnl = editingTrade.netPnl;
       finalCommission = editingTrade.commission;
       finalCommissionUnmeasured = Boolean(editingTrade.commissionUnmeasured);
     } else {
-      // V1b simplified trade without prices: unrecorded monetary figures
+      // Simplified trade without prices
       finalCalculationMode = 'unrecorded';
       finalNetPnl = 0;
       finalCommission = 0;
       finalCommissionUnmeasured = true;
+    }
+
+    // Preserve historic pdArrays elements if editing
+    let finalPdArrays: PDArray[];
+    if (editingTrade?.pdArrays && editingTrade.pdArrays.length > 0) {
+      if (editingTrade.pdArrays.includes(form.selectedModel)) {
+        finalPdArrays = editingTrade.pdArrays;
+      } else {
+        // User changed primary model: set as first element while preserving other confluences
+        const otherConfluences = editingTrade.pdArrays.slice(1);
+        finalPdArrays = [form.selectedModel, ...otherConfluences];
+      }
+    } else {
+      finalPdArrays = [form.selectedModel];
     }
 
     const payload: Omit<Trade, 'id'> = {
@@ -329,12 +367,12 @@ function TradeFormModalContent({
       entryDate: finalEntryDate,
       timePrecision: finalTimePrecision,
       operationalWindow: form.selectedWindow,
-      entryPrice: hasEnteredPrices ? parsedEntry : (editingTrade?.entryPrice || 0),
-      exitPrice: hasEnteredPrices ? parsedExit : (editingTrade?.exitPrice || 0),
+      entryPrice: hasNewEnteredPrices ? parsedEntry : (editingTrade?.entryPrice || 0),
+      exitPrice: hasNewEnteredPrices ? parsedExit : (editingTrade?.exitPrice || 0),
       stopLoss: parsedSL > 0 ? parsedSL : (editingTrade?.stopLoss || 0),
       takeProfit: parsedTP > 0 ? parsedTP : (editingTrade?.takeProfit || 0),
       size: parsedSize > 0 ? parsedSize : (editingTrade?.size || 1),
-      pricesUnrecorded: !hasEnteredPrices && !(editingTrade && editingTrade.entryPrice > 0),
+      pricesUnrecorded: !hasNewEnteredPrices && !(editingTrade && editingTrade.entryPrice > 0),
       riskPercentUsed: editingTrade?.riskPercentUsed || 1.0,
       htfAligned: editingTrade?.htfAligned || ['1D', '4H', '2H', '30m'],
       grossPnl: finalNetPnl + finalCommission,
@@ -343,7 +381,7 @@ function TradeFormModalContent({
       netPnl: finalNetPnl,
       plannedRR: isUnchangedHistoricalZero && editingTrade ? editingTrade.plannedRR : Number(Math.abs(rMultipleNum).toFixed(2)),
       rMultiple: isUnchangedHistoricalZero && editingTrade ? editingTrade.rMultiple : Number(signedR.toFixed(2)),
-      realizedNetReturnPct: finalRealizedReturnPct,
+      realizedNetReturnPct: finalRealizedReturnPct !== null ? finalRealizedReturnPct : (editingTrade?.realizedNetReturnPct ?? null),
       durationMinutes: finalDurationMinutes,
       status: form.outcomeMode === 'TP' ? 'Win' : 'Loss',
       killzone:
@@ -351,12 +389,12 @@ function TradeFormModalContent({
           ? 'NY Open 09:30 AM (09:30-10:30)'
           : 'NY Mid-Morning (10:30-12:00)',
       playbookId: editingTrade?.playbookId || undefined,
-      pdArrays: [form.selectedModel],
+      pdArrays: finalPdArrays,
       checklistCompleted: editingTrade?.checklistCompleted || [],
       setupGrade: editingTrade?.setupGrade || 'Sin evaluar',
       dailyBias: editingTrade?.dailyBias || 'Neutral',
       dolTarget: editingTrade?.dolTarget || '',
-      timeframe: editingTrade?.timeframe || '5m',
+      timeframe: editingTrade?.timeframe || '15m',
       followedPlan: editingTrade?.followedPlan ?? true,
       psychologyTag: form.psychologyTag,
       tradingViewUrl: form.tradingViewUrl || undefined,
@@ -606,11 +644,11 @@ function TradeFormModalContent({
                   step="1"
                   value={form.durationMinutes}
                   onChange={(e) => setForm({ ...form, durationMinutes: e.target.value })}
-                  placeholder="Ej: 15 (minutos)"
+                  placeholder="Ej: 15 (minutos enteros)"
                   className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 text-zinc-100 font-mono focus:outline-none focus:ring-2 ${theme.ringClass}`}
                 />
                 <span className="text-[10px] text-zinc-500 block mt-0.5">
-                  Duración manual del trade. Si se deja vacía, se almacena desconocida.
+                  Duración manual en minutos enteros. Si se deja vacía, se almacena desconocida.
                 </span>
               </div>
             </div>
@@ -704,67 +742,74 @@ function TradeFormModalContent({
               onClick={() => setShowOptionalPrices((prev) => !prev)}
               className="w-full px-3.5 py-2.5 text-xs font-medium text-zinc-400 hover:text-zinc-200 flex items-center justify-between cursor-pointer"
             >
-              <span>Precios de Ejecución (Opcional — experimental)</span>
+              <span>
+                Precios de Ejecución (Opcional — experimental) · {instrumentSpec.label}
+              </span>
               {showOptionalPrices ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
             </button>
 
             {showOptionalPrices && (
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 p-3 pt-0 border-t border-white/[0.04]">
-                <div>
-                  <label className="block text-[10px] text-zinc-500 mb-0.5">Precio Entrada</label>
-                  <input
-                    type="number"
-                    step="any"
-                    value={form.entryPrice}
-                    onChange={(e) => setForm({ ...form, entryPrice: e.target.value })}
-                    placeholder="Opcional"
-                    className="w-full px-2 py-1 text-xs bg-zinc-900 text-zinc-200 rounded-lg border border-white/10"
-                  />
+              <div className="space-y-2 p-3 pt-0 border-t border-white/[0.04]">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 mb-0.5">Precio Entrada</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={form.entryPrice}
+                      onChange={(e) => setForm({ ...form, entryPrice: e.target.value })}
+                      placeholder="Opcional"
+                      className="w-full px-2 py-1 text-xs bg-zinc-900 text-zinc-200 rounded-lg border border-white/10"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-rose-500 mb-0.5">Stop Loss</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={form.stopLoss}
+                      onChange={(e) => setForm({ ...form, stopLoss: e.target.value })}
+                      placeholder="Opcional"
+                      className="w-full px-2 py-1 text-xs bg-zinc-900 text-zinc-200 rounded-lg border border-white/10"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-emerald-500 mb-0.5">Take Profit</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={form.takeProfit}
+                      onChange={(e) => setForm({ ...form, takeProfit: e.target.value })}
+                      placeholder="Opcional"
+                      className="w-full px-2 py-1 text-xs bg-zinc-900 text-zinc-200 rounded-lg border border-white/10"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 mb-0.5">Precio Salida</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={form.exitPrice}
+                      onChange={(e) => setForm({ ...form, exitPrice: e.target.value })}
+                      placeholder="Opcional"
+                      className="w-full px-2 py-1 text-xs bg-zinc-900 text-zinc-200 rounded-lg border border-white/10"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 mb-0.5">Lotes / Contratos</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={form.size}
+                      onChange={(e) => setForm({ ...form, size: e.target.value })}
+                      placeholder="1"
+                      className="w-full px-2 py-1 text-xs bg-zinc-900 text-zinc-200 rounded-lg border border-white/10"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-[10px] text-rose-500 mb-0.5">Stop Loss</label>
-                  <input
-                    type="number"
-                    step="any"
-                    value={form.stopLoss}
-                    onChange={(e) => setForm({ ...form, stopLoss: e.target.value })}
-                    placeholder="Opcional"
-                    className="w-full px-2 py-1 text-xs bg-zinc-900 text-zinc-200 rounded-lg border border-white/10"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] text-emerald-500 mb-0.5">Take Profit</label>
-                  <input
-                    type="number"
-                    step="any"
-                    value={form.takeProfit}
-                    onChange={(e) => setForm({ ...form, takeProfit: e.target.value })}
-                    placeholder="Opcional"
-                    className="w-full px-2 py-1 text-xs bg-zinc-900 text-zinc-200 rounded-lg border border-white/10"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 mb-0.5">Precio Salida</label>
-                  <input
-                    type="number"
-                    step="any"
-                    value={form.exitPrice}
-                    onChange={(e) => setForm({ ...form, exitPrice: e.target.value })}
-                    placeholder="Opcional"
-                    className="w-full px-2 py-1 text-xs bg-zinc-900 text-zinc-200 rounded-lg border border-white/10"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 mb-0.5">Lotes / Contratos</label>
-                  <input
-                    type="number"
-                    step="any"
-                    value={form.size}
-                    onChange={(e) => setForm({ ...form, size: e.target.value })}
-                    placeholder="1"
-                    className="w-full px-2 py-1 text-xs bg-zinc-900 text-zinc-200 rounded-lg border border-white/10"
-                  />
-                </div>
+                <p className="text-[10px] text-zinc-500">
+                  Especificación de contrato: {instrumentSpec.label} (Multiplicador: ${instrumentSpec.pointValue}/punto).
+                </p>
               </div>
             )}
           </div>

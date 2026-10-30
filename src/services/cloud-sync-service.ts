@@ -32,6 +32,8 @@ interface AccountRow {
   profit_target: number;
   max_drawdown: number;
   daily_loss_limit: number;
+  is_technical?: boolean;
+  has_verified_balance?: boolean;
 }
 
 interface PlaybookRow {
@@ -250,6 +252,8 @@ export async function loadTradingSnapshot(client: SupabaseClient): Promise<Tradi
       id: row.id, name: row.name, firm: row.firm,
       initialBalance: Number(row.initial_balance), profitTarget: Number(row.profit_target),
       maxDrawdown: Number(row.max_drawdown), dailyLossLimit: Number(row.daily_loss_limit),
+      isTechnical: Boolean(row.is_technical),
+      hasVerifiedBalance: row.has_verified_balance !== undefined ? Boolean(row.has_verified_balance) : (Number(row.initial_balance) > 0),
     })),
     playbooks: ((playbooksResult.data ?? []) as unknown as PlaybookRow[]).map((row) => ({
       id: row.id, name: row.name, description: row.description,
@@ -344,6 +348,8 @@ export async function syncTradingChanges(
   const changedAccounts = getChanged(before.accounts, after.accounts, (row) => row.id).map((row) => ({
     id: row.id, name: row.name, firm: row.firm, initial_balance: row.initialBalance,
     profit_target: row.profitTarget, max_drawdown: row.maxDrawdown, daily_loss_limit: row.dailyLossLimit,
+    is_technical: row.isTechnical ?? false,
+    has_verified_balance: row.hasVerifiedBalance ?? true,
   }));
   const changedPlaybooks = getChanged(before.playbooks, after.playbooks, (row) => row.id).map((row) => ({
     id: row.id, name: row.name, description: row.description,

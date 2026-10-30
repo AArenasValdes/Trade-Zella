@@ -8,7 +8,7 @@ import type {
   RiskCalculationInput,
   RiskCalculationResult,
 } from '../types/trading.ts';
-import { INSTRUMENT_SPECS, ICT_CHECKLIST_ITEMS } from '../config/ict-constants.ts';
+import { getInstrumentSpec, ICT_CHECKLIST_ITEMS } from '../config/ict-constants.ts';
 import {
   calculateConsolidatedReturnPct,
   calculateAvgWinReturnPct,
@@ -68,7 +68,8 @@ export function autoCalculateTradeMath(params: {
     direction = takeProfit > entryPrice ? 'Long' : 'Short';
   }
 
-  const multiplier = INSTRUMENT_SPECS[cleanSymbol]?.pointValue ?? 1;
+  const spec = getInstrumentSpec(cleanSymbol);
+  const multiplier = spec.pointValue;
   const priceDiff = direction === 'Long' ? exitPrice - entryPrice : entryPrice - exitPrice;
   const riskPerUnit = stopLoss > 0 ? Math.abs(entryPrice - stopLoss) : 0;
 
@@ -95,6 +96,8 @@ export function autoCalculateTradeMath(params: {
     grossPnl,
     netPnl,
     pointValue: multiplier,
+    verifiedSpec: spec.verified,
+    specLabel: spec.label,
   };
 }
 
@@ -106,7 +109,8 @@ export function calculatePositionSize(
   if (accountBalance <= 0 || riskPercent <= 0 || stopDistance <= 0) return null;
 
   const cleanSymbol = symbol.trim().toUpperCase();
-  const pointValue = INSTRUMENT_SPECS[cleanSymbol]?.pointValue ?? 1;
+  const spec = getInstrumentSpec(cleanSymbol);
+  const pointValue = spec.pointValue;
   const riskDollars = Number(((accountBalance * riskPercent) / 100).toFixed(2));
   const dollarRiskPerUnit = stopDistance * pointValue;
 
@@ -135,15 +139,15 @@ export function calculateDashboardMetrics(
   accounts: readonly PropAccount[] = [],
   targetAccountId?: string
 ): DashboardMetrics {
-  if (trades.length === 0) {
-    const hasAccounts = accounts.length > 0;
-    const refCapital = hasAccounts
-      ? accounts.reduce((s, a) => s + (a.initialBalance > 0 ? a.initialBalance : 0), 0)
-      : 0;
+  const verifiedAccounts = accounts.filter(
+    (a) => a.hasVerifiedBalance !== false && Number.isFinite(a.initialBalance) && a.initialBalance > 0
+  );
+  const refCapital = verifiedAccounts.reduce((s, a) => s + a.initialBalance, 0);
 
+  if (trades.length === 0) {
     return {
       netPnl: 0,
-      netReturnPct: hasAccounts ? 0 : null,
+      netReturnPct: refCapital > 0 ? 0 : null,
       grossProfit: 0,
       grossLoss: 0,
       totalCommissions: 0,
@@ -161,7 +165,7 @@ export function calculateDashboardMetrics(
       expectancyPct: null,
       avgRMultiple: 0,
       maxDrawdown: 0,
-      maxDrawdownPct: hasAccounts ? 0 : null,
+      maxDrawdownPct: refCapital > 0 ? 0 : null,
       bestTrade: 0,
       bestTradeReturnPct: null,
       worstTrade: 0,
@@ -179,13 +183,22 @@ export function calculateDashboardMetrics(
         { metric: 'Contexto HTF', score: 0, fullMark: 100 },
         { metric: 'Risk Control', score: 0, fullMark: 100 },
       ],
+      dataCoverage: {
+        totalTrades: 0,
+        monetaryTradesCount: 0,
+        returnPctTradesCount: 0,
+        unrecordedTradesCount: 0,
+        hasVerifiedReferenceCapital: refCapital > 0,
+      },
+      curveMode: refCapital > 0 ? 'percentage' : 'r_multiple',
+      totalRMultiple: 0,
     };
   }
 
   const sorted = [...trades].sort(
     (a, b) => a.entryDate.localeCompare(b.entryDate) || a.id.localeCompare(b.id)
   );
-  // Status-based wins and losses (accurate for R-only, % return and monetary trades alike)
+
   const wins = sorted.filter((t) => t.status === 'Win');
   const losses = sorted.filter((t) => t.status === 'Loss');
 
@@ -207,7 +220,7 @@ export function calculateDashboardMetrics(
   const winRate = totalTrades > 0 ? Number(((wins.length / totalTrades) * 100).toFixed(1)) : 0;
   const lossRate = totalTrades > 0 ? losses.length / totalTrades : 0;
 
-  // Profit factor: uses monetary figures if available, or R-multiple if purely R-based
+  // Profit Factor: monetary profit factor if monetary trades exist; R-Multiple profit factor if purely R-based
   let profitFactor = 0;
   if (grossLoss > 0 || grossProfit > 0) {
     profitFactor = grossLoss === 0 ? (grossProfit > 0 ? 10.0 : 0) : Number((grossProfit / grossLoss).toFixed(2));
@@ -222,11 +235,21 @@ export function calculateDashboardMetrics(
   const winLossRatio =
     avgLoss === 0 ? (avgWin > 0 ? 5.0 : 0) : Number((avgWin / avgLoss).toFixed(2));
 
-  const expectancy = Number(((winRate / 100) * avgWin - lossRate * avgLoss).toFixed(2));
+  // Expectancy: monetary expectancy if monetary trades exist, else R expectancy
+  let expectancy = 0;
+  if (monetaryTrades.length > 0) {
+    expectancy = Number(((winRate / 100) * avgWin - lossRate * avgLoss).toFixed(2));
+  } else {
+    const avgWinR = wins.length > 0 ? wins.reduce((acc, t) => acc + (t.rMultiple > 0 ? t.rMultiple : 0), 0) / wins.length : 0;
+    const avgLossR = losses.length > 0 ? Math.abs(losses.reduce((acc, t) => acc + (t.rMultiple < 0 ? t.rMultiple : 0), 0)) / losses.length : 0;
+    expectancy = Number(((winRate / 100) * avgWinR - lossRate * avgLossR).toFixed(2));
+  }
+
   const tradesWithR = sorted.filter((t) => Number.isFinite(t.rMultiple));
   const avgRMultiple = tradesWithR.length > 0
     ? Number((tradesWithR.reduce((acc, t) => acc + t.rMultiple, 0) / tradesWithR.length).toFixed(2))
     : 0;
+  const totalRMultiple = Number(tradesWithR.reduce((acc, t) => acc + t.rMultiple, 0).toFixed(2));
 
   let peak = 0;
   let equity = 0;
@@ -234,14 +257,16 @@ export function calculateDashboardMetrics(
   let bestTrade = 0;
   let worstTrade = 0;
 
-  sorted.forEach((t) => {
-    equity += t.netPnl;
-    if (equity > peak) peak = equity;
-    const dd = peak - equity;
-    if (dd > maxDrawdown) maxDrawdown = dd;
-    if (t.netPnl > bestTrade) bestTrade = t.netPnl;
-    if (t.netPnl < worstTrade) worstTrade = t.netPnl;
-  });
+  if (monetaryTrades.length > 0) {
+    monetaryTrades.forEach((t) => {
+      equity += t.netPnl;
+      if (equity > peak) peak = equity;
+      const dd = peak - equity;
+      if (dd > maxDrawdown) maxDrawdown = dd;
+      if (t.netPnl > bestTrade) bestTrade = t.netPnl;
+      if (t.netPnl < worstTrade) worstTrade = t.netPnl;
+    });
+  }
 
   let streakType: 'Win' | 'Loss' | 'None' = 'None';
   let streakCount = 0;
@@ -321,7 +346,7 @@ export function calculateDashboardMetrics(
     expectancy,
     expectancyPct,
     avgRMultiple,
-    maxDrawdown: Number(maxDrawdown.toFixed(2)),
+    maxDrawdown: equityResult.curveMode === 'percentage' ? Number(maxDrawdown.toFixed(2)) : (equityResult.maxDrawdownR ?? 0),
     maxDrawdownPct: equityResult.maxDrawdownPct,
     bestTrade,
     bestTradeReturnPct: equityResult.bestTradeReturnPct,
@@ -340,5 +365,8 @@ export function calculateDashboardMetrics(
       { metric: 'Contexto HTF', score: Math.round(planComplianceRate), fullMark: 100 },
       { metric: 'Risk Control', score: riskScore, fullMark: 100 },
     ],
+    dataCoverage: consolidated.coverage,
+    curveMode: equityResult.curveMode,
+    totalRMultiple,
   };
 }

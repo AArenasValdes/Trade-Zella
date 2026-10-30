@@ -56,6 +56,8 @@ export interface PropAccount {
   profitTarget: number;
   maxDrawdown: number;
   dailyLossLimit: number;
+  isTechnical?: boolean;
+  hasVerifiedBalance?: boolean;
 }
 
 export interface ICTPlaybook {
@@ -135,6 +137,14 @@ export interface TradeFilters {
   dateTo: string;
 }
 
+export interface DataCoverageInfo {
+  totalTrades: number;
+  monetaryTradesCount: number;
+  returnPctTradesCount: number;
+  unrecordedTradesCount: number;
+  hasVerifiedReferenceCapital: boolean;
+}
+
 export interface DashboardMetrics {
   netPnl: number;
   netReturnPct?: number | null;
@@ -167,6 +177,9 @@ export interface DashboardMetrics {
   longStats: { count: number; winRate: number; netPnl: number };
   shortStats: { count: number; winRate: number; netPnl: number };
   radarData: { metric: string; score: number; fullMark: number }[];
+  dataCoverage?: DataCoverageInfo;
+  curveMode?: 'percentage' | 'r_multiple';
+  totalRMultiple?: number;
 }
 
 export interface RiskCalculationInput {

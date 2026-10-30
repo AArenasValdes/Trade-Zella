@@ -63,12 +63,16 @@ export function CalendarView({
   const calendarData = useMemo(() => {
     const map: Record<
       string,
-      { pnl: number; returnPct: number | null; count: number; wins: number; trades: Trade[] }
+      { pnl: number; sumR: number; hasMonetary: boolean; returnPct: number | null; count: number; wins: number; trades: Trade[] }
     > = {};
     trades.forEach((t) => {
       const day = extractNyDateKey(t.entryDate) || t.entryDate.slice(0, 10);
-      if (!map[day]) map[day] = { pnl: 0, returnPct: null, count: 0, wins: 0, trades: [] };
-      map[day].pnl = Number((map[day].pnl + t.netPnl).toFixed(2));
+      if (!map[day]) map[day] = { pnl: 0, sumR: 0, hasMonetary: false, returnPct: null, count: 0, wins: 0, trades: [] };
+      if (t.calculationMode !== 'unrecorded') {
+        map[day].pnl = Number((map[day].pnl + t.netPnl).toFixed(2));
+        map[day].hasMonetary = true;
+      }
+      map[day].sumR = Number((map[day].sumR + (Number.isFinite(t.rMultiple) ? t.rMultiple : 0)).toFixed(2));
       map[day].count += 1;
       if (t.status === 'Win' || t.netPnl > 0) map[day].wins += 1;
       map[day].trades.push(t);
@@ -87,10 +91,12 @@ export function CalendarView({
         daysInMonth: 0,
         firstDayWeekday: 0,
         monthlyPnl: 0,
+        monthlySumR: 0,
+        hasMonthlyMonetary: false,
         monthlyReturnPct: null as number | null,
         greenDays: 0,
         redDays: 0,
-        weeklySummaries: [] as Array<{weekStart: string; weekEnd: string; count: number; returnPct: number | null; pnl: number}>,
+        weeklySummaries: [] as Array<{weekStart: string; weekEnd: string; count: number; returnPct: number | null; pnl: number; hasMonetary: boolean; sumR: number}>,
         weekendTrades: [] as Trade[],
       };
     }
@@ -98,27 +104,33 @@ export function CalendarView({
     const [year, month] = calMonth.split('-').map(Number);
     const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
     const firstWeekday = (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() + 6) % 7;
-    // When a month starts on Saturday/Sunday, its first business day starts a new row.
     const firstDayWeekday = firstWeekday < 5 ? firstWeekday : 0;
 
     let monthlyPnl = 0;
+    let monthlySumR = 0;
+    let hasMonthlyMonetary = false;
     let greenDays = 0;
     let redDays = 0;
     const monthlyTrades: Trade[] = [];
 
     Object.entries(map).forEach(([dateKey, info]) => {
       if (dateKey.startsWith(calMonth)) {
-        monthlyPnl += info.pnl;
+        if (info.hasMonetary) {
+          monthlyPnl += info.pnl;
+          hasMonthlyMonetary = true;
+        }
+        monthlySumR += info.sumR;
         monthlyTrades.push(...info.trades);
-        if (info.pnl > 0 || (info.pnl === 0 && info.wins > 0)) greenDays++;
-        else if (info.pnl < 0 || (info.pnl === 0 && info.trades.length > 0 && info.wins === 0)) redDays++;
+
+        const isGreen = info.returnPct !== null ? info.returnPct > 0 : (info.hasMonetary ? info.pnl > 0 : info.sumR > 0);
+        const isRed = info.returnPct !== null ? info.returnPct < 0 : (info.hasMonetary ? info.pnl < 0 : info.sumR < 0);
+        if (isGreen) greenDays++;
+        else if (isRed) redDays++;
       }
     });
 
     const monthlyReturnPct = calculateMonthlyReturnPct(monthlyTrades, accounts);
 
-    // Group actual NY-dated trades by Monday. Weekend history remains in totals,
-    // even though weekends are hidden from the calendar grid.
     const weekBuckets = new Map<string, Trade[]>();
     const weekendTrades: Trade[] = [];
     for (const trade of monthlyTrades) {
@@ -135,17 +147,24 @@ export function CalendarView({
       const key = monday.toISOString().slice(0, 10);
       weekBuckets.set(key, [...(weekBuckets.get(key) ?? []), trade]);
     }
+
     const weeklySummaries = Array.from(weekBuckets, ([weekStart, weeklyTrades]) => {
       const [sy, sm, sd] = weekStart.split('-').map(Number);
       const mon = new Date(Date.UTC(sy, sm - 1, sd));
       const sun = new Date(mon.getTime() + 6 * 86400000);
       const weekEnd = sun.toISOString().slice(0, 10);
+      const monetary = weeklyTrades.filter((t) => t.calculationMode !== 'unrecorded');
+      const pnl = monetary.reduce((sum, trade) => sum + trade.netPnl, 0);
+      const sumR = Number(weeklyTrades.reduce((sum, trade) => sum + (Number.isFinite(trade.rMultiple) ? trade.rMultiple : 0), 0).toFixed(2));
+
       return {
         weekStart,
         weekEnd,
         count: weeklyTrades.length,
         returnPct: calculateMonthlyReturnPct(weeklyTrades, accounts),
-        pnl: weeklyTrades.reduce((sum, trade) => sum + trade.netPnl, 0),
+        pnl: Number(pnl.toFixed(2)),
+        hasMonetary: monetary.length > 0,
+        sumR,
       };
     }).sort((a, b) => a.weekStart.localeCompare(b.weekStart));
 
@@ -154,6 +173,8 @@ export function CalendarView({
       daysInMonth,
       firstDayWeekday,
       monthlyPnl: Number(monthlyPnl.toFixed(2)),
+      monthlySumR: Number(monthlySumR.toFixed(2)),
+      hasMonthlyMonetary,
       monthlyReturnPct,
       greenDays,
       redDays,
@@ -190,6 +211,18 @@ export function CalendarView({
     );
   }
 
+  const isMonthlyGreen = calendarData.monthlyReturnPct !== null
+    ? calendarData.monthlyReturnPct > 0
+    : calendarData.hasMonthlyMonetary
+    ? calendarData.monthlyPnl > 0
+    : calendarData.monthlySumR > 0;
+
+  const isMonthlyRed = calendarData.monthlyReturnPct !== null
+    ? calendarData.monthlyReturnPct < 0
+    : calendarData.hasMonthlyMonetary
+    ? calendarData.monthlyPnl < 0
+    : calendarData.monthlySumR < 0;
+
   return (
     <div className="space-y-6">
       <div className="bg-[#111114] rounded-2xl p-6 border border-white/[0.08]">
@@ -223,14 +256,19 @@ export function CalendarView({
           <div className="flex flex-wrap items-center gap-2 text-xs font-bold tabular-nums sm:gap-4">
             <span
               className={`px-3 py-1 rounded-lg border ${
-                calendarData.monthlyPnl > 0 || (calendarData.monthlyReturnPct !== null && calendarData.monthlyReturnPct > 0)
+                isMonthlyGreen
                   ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                  : calendarData.monthlyPnl < 0 || (calendarData.monthlyReturnPct !== null && calendarData.monthlyReturnPct < 0)
+                  : isMonthlyRed
                   ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
                   : 'bg-zinc-800/40 text-zinc-300 border-white/10'
               }`}
             >
-              Retorno Mes: {formatReturnPct(calendarData.monthlyReturnPct, { fallback: `${calendarData.monthlyPnl >= 0 ? '+' : ''}$${calendarData.monthlyPnl}` })}
+              Retorno Mes:{' '}
+              {calendarData.monthlyReturnPct !== null
+                ? formatReturnPct(calendarData.monthlyReturnPct)
+                : calendarData.hasMonthlyMonetary && calendarData.monthlyPnl !== 0
+                ? `${calendarData.monthlyPnl >= 0 ? '+' : '-'}$${Math.abs(calendarData.monthlyPnl).toFixed(2)} USD`
+                : `${calendarData.monthlySumR >= 0 ? '+' : ''}${calendarData.monthlySumR.toFixed(2)}R`}
             </span>
             <span className="text-emerald-400">
               {calendarData.greenDays} Días TP
@@ -254,17 +292,26 @@ export function CalendarView({
             <p className="text-xs text-zinc-500">Sin operaciones registradas este mes.</p>
           ) : (
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-              {calendarData.weeklySummaries.map((week) => (
-                <div key={week.weekStart} className="rounded-lg border border-white/[0.07] bg-zinc-900/60 p-2.5">
-                  <p className="text-[11px] text-zinc-400">
-                    Semana {week.weekStart.slice(8, 10)}/{week.weekStart.slice(5, 7)} – {week.weekEnd.slice(8, 10)}/{week.weekEnd.slice(5, 7)}
-                  </p>
-                  <strong className={`text-sm tabular-nums ${week.pnl > 0 || (week.returnPct !== null && week.returnPct > 0) ? 'text-emerald-400' : week.pnl < 0 || (week.returnPct !== null && week.returnPct < 0) ? 'text-rose-400' : 'text-zinc-300'}`}>
-                    {formatReturnPct(week.returnPct, {fallback: `${week.pnl >= 0 ? '+' : '-'}$${Math.abs(week.pnl).toFixed(2)}`})}
-                  </strong>
-                  <p className="text-[10px] text-zinc-500">{week.count} {week.count === 1 ? 'trade' : 'trades'}</p>
-                </div>
-              ))}
+              {calendarData.weeklySummaries.map((week) => {
+                const isWeekGreen = week.returnPct !== null ? week.returnPct > 0 : (week.hasMonetary ? week.pnl > 0 : week.sumR > 0);
+                const isWeekRed = week.returnPct !== null ? week.returnPct < 0 : (week.hasMonetary ? week.pnl < 0 : week.sumR < 0);
+
+                return (
+                  <div key={week.weekStart} className="rounded-lg border border-white/[0.07] bg-zinc-900/60 p-2.5">
+                    <p className="text-[11px] text-zinc-400">
+                      Semana {week.weekStart.slice(8, 10)}/{week.weekStart.slice(5, 7)} – {week.weekEnd.slice(8, 10)}/{week.weekEnd.slice(5, 7)}
+                    </p>
+                    <strong className={`text-sm tabular-nums ${isWeekGreen ? 'text-emerald-400' : isWeekRed ? 'text-rose-400' : 'text-zinc-300'}`}>
+                      {week.returnPct !== null
+                        ? formatReturnPct(week.returnPct)
+                        : week.hasMonetary && week.pnl !== 0
+                        ? `${week.pnl >= 0 ? '+' : '-'}$${Math.abs(week.pnl).toFixed(2)}`
+                        : `${week.sumR >= 0 ? '+' : ''}${week.sumR.toFixed(2)}R`}
+                    </strong>
+                    <p className="text-[10px] text-zinc-500">{week.count} {week.count === 1 ? 'trade' : 'trades'}</p>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -294,8 +341,8 @@ export function CalendarView({
               const dayData = calendarData.map[dateStr];
 
               const hasTrades = Boolean(dayData && dayData.count > 0);
-              const isGreen = Boolean(dayData && (dayData.pnl > 0 || (dayData.returnPct !== null && dayData.returnPct > 0)));
-              const isRed = Boolean(dayData && (dayData.pnl < 0 || (dayData.returnPct !== null && dayData.returnPct < 0)));
+              const isGreen = Boolean(dayData && (dayData.returnPct !== null ? dayData.returnPct > 0 : (dayData.hasMonetary ? dayData.pnl > 0 : dayData.sumR > 0)));
+              const isRed = Boolean(dayData && (dayData.returnPct !== null ? dayData.returnPct < 0 : (dayData.hasMonetary ? dayData.pnl < 0 : dayData.sumR < 0)));
 
               return (
                 <div
@@ -362,9 +409,11 @@ export function CalendarView({
                             : 'text-zinc-300'
                         }`}
                       >
-                        {formatReturnPct(dayData.returnPct, {
-                          fallback: dayData.pnl >= 0 ? `+$${dayData.pnl.toFixed(0)}` : `-$${Math.abs(dayData.pnl).toFixed(0)}`,
-                        })}
+                        {dayData.returnPct !== null
+                          ? formatReturnPct(dayData.returnPct)
+                          : dayData.hasMonetary && dayData.pnl !== 0
+                          ? `${dayData.pnl >= 0 ? '+' : '-'}$${Math.abs(dayData.pnl).toFixed(0)}`
+                          : `${dayData.sumR >= 0 ? '+' : ''}${dayData.sumR.toFixed(2)}R`}
                       </div>
                       <div className="text-[10px] text-zinc-400">
                         {Math.round((dayData.wins / dayData.count) * 100)}% WR
@@ -416,11 +465,13 @@ export function CalendarView({
                   <span className="text-[11px] text-zinc-400">
                     {selectedDayTrades.length === 0
                       ? `Sin operaciones registradas en ${selectedDay}`
-                      : `Retorno Día: ${formatReturnPct(selectedDayReturnPct, {
-                          fallback: selectedDayPnl !== 0
+                      : `Retorno Día: ${
+                          selectedDayReturnPct !== null
+                            ? formatReturnPct(selectedDayReturnPct)
+                            : selectedDayInfo?.hasMonetary && selectedDayPnl !== 0
                             ? `${selectedDayPnl >= 0 ? '+' : ''}$${selectedDayPnl.toFixed(2)} USD`
-                            : 'Sin dato'
-                        })} · Selecciona una operación para inspeccionarla`}
+                            : `${(selectedDayInfo?.sumR ?? 0) >= 0 ? '+' : ''}${(selectedDayInfo?.sumR ?? 0).toFixed(2)}R`
+                        } · Selecciona una operación para inspeccionarla`}
                   </span>
                 </div>
                 <button
@@ -485,10 +536,14 @@ export function CalendarView({
                               </span>
                             )}
                           </span>
-                          {!isUnrecorded && t.netPnl !== 0 && (
+                          {!isUnrecorded && t.netPnl !== 0 ? (
                             <span className="text-[10px] text-zinc-500 font-mono">
                               {t.calculationMode === 'derived_r' ? '~' : ''}
                               {t.netPnl >= 0 ? `+$${t.netPnl.toFixed(2)}` : `-$${Math.abs(t.netPnl).toFixed(2)}`} USD
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-zinc-500 font-mono">
+                              (Métrica en R)
                             </span>
                           )}
                         </div>

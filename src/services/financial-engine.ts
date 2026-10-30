@@ -4,12 +4,21 @@ import type {
   OperationalWindowStatItem,
 } from './date-time-service.ts';
 
+export interface DataCoverageInfo {
+  totalTrades: number;
+  monetaryTradesCount: number;
+  returnPctTradesCount: number;
+  unrecordedTradesCount: number;
+  hasVerifiedReferenceCapital: boolean;
+}
+
 export interface ConsolidatedReturnResult {
   returnPct: number | null;
-  totalNetPnl: number;
+  totalNetPnl: number | null;
   totalReferenceCapital: number;
   isValid: boolean;
   accountCount: number;
+  coverage: DataCoverageInfo;
   errorReason?: string;
 }
 
@@ -18,34 +27,43 @@ export interface EquityPointPct {
   tradeLabel: string;
   date: string;
   time: string;
-  /** 'window' means the saved time is representative, not an exact execution timestamp. */
   timePrecision?: Trade['timePrecision'];
   operationalWindow?: Trade['operationalWindow'];
   estimatedPnl?: boolean;
   hasEstimatedInCumulative?: boolean;
   symbol: string;
   direction?: string;
-  pnl: number;
+  pnl: number | null;
   tradeReturnPct: number | null;
-  cumulativePnl: number;
-  cumulativeReturnPct: number;
-  equity: number;
-  drawdownPct: number;
+  tradeRMultiple?: number;
+  cumulativePnl: number | null;
+  cumulativeReturnPct: number | null;
+  cumulativeRMultiple?: number;
+  equity: number | null;
+  drawdownPct: number | null;
+  drawdownR?: number;
 }
 
 export interface PercentageEquityCurveResult {
+  curveMode: 'percentage' | 'r_multiple';
   points: EquityPointPct[];
   maxDrawdownPct: number | null;
+  maxDrawdownR?: number | null;
   currentReturnPct: number | null;
+  currentReturnR?: number | null;
   peakReturnPct: number | null;
+  peakReturnR?: number | null;
   bestTradeReturnPct: number | null;
+  bestTradeR?: number | null;
   worstTradeReturnPct: number | null;
+  worstTradeR?: number | null;
   referenceCapital: number;
   isValid: boolean;
 }
 
 export interface OperationalWindowReturnItem extends OperationalWindowStatItem {
   returnPct: number | null;
+  sumR: number;
 }
 
 export interface OperationalWindowReturnSummary {
@@ -58,8 +76,9 @@ export interface OperationalWindowReturnSummary {
 export interface WeekdayReturnItem {
   day: string;
   dayIndex: number;
-  pnl: number;
+  pnl: number | null;
   returnPct: number | null;
+  sumR: number;
   trades: number;
 }
 
@@ -108,33 +127,78 @@ export function resolveTradeReturnPct(
 
 /**
  * Resolves the relevant accounts and calculates consolidated return.
- * - Single account scope: sum(netPnl) / account.initialBalance * 100
- * - Multi-account scope ("All"): sum(netPnl) / sum(initialBalances) * 100
- *
- * Strictly enforces that percentages from different accounts are never summed directly.
- * If any trade lacks a valid account with positive capital, marks calculation as invalid (no fabricated denominators).
+ * - Filters accounts to only verified accounts with positive initial capital.
+ * - Distinguishes between monetary trades and unrecorded trades.
+ * - Never sums percentages from different capital bases without mathematical validity.
  */
 export function calculateConsolidatedReturnPct(
-  trades: readonly { netPnl: number; accountId?: string }[],
+  trades: readonly Pick<Trade, 'netPnl' | 'accountId' | 'calculationMode' | 'realizedNetReturnPct' | 'rMultiple'>[],
   accounts: readonly PropAccount[],
   targetAccountId?: string
 ): ConsolidatedReturnResult {
+  const verifiedAccounts = accounts.filter(
+    (a) => a.hasVerifiedBalance !== false && Number.isFinite(a.initialBalance) && a.initialBalance > 0
+  );
+
+  const coverage: DataCoverageInfo = {
+    totalTrades: trades.length,
+    monetaryTradesCount: trades.filter((t) => t.calculationMode !== 'unrecorded' && Number.isFinite(t.netPnl)).length,
+    returnPctTradesCount: trades.filter((t) => t.realizedNetReturnPct !== null && t.realizedNetReturnPct !== undefined).length,
+    unrecordedTradesCount: trades.filter((t) => t.calculationMode === 'unrecorded').length,
+    hasVerifiedReferenceCapital: verifiedAccounts.length > 0,
+  };
+
+  // 1. Single Account Scope
   if (targetAccountId && targetAccountId !== 'All') {
-    const singleAccount = accounts.find((a) => a.id === targetAccountId);
-    if (!singleAccount || !Number.isFinite(singleAccount.initialBalance) || singleAccount.initialBalance <= 0) {
+    const singleAccount = verifiedAccounts.find((a) => a.id === targetAccountId);
+    const tradesInScope = trades.filter((t) => t.accountId === targetAccountId);
+
+    if (!singleAccount) {
+      // Check if explicit realizedNetReturnPct exists on trades in this technical account
+      const explicitPctTrades = tradesInScope.filter(
+        (t) => t.realizedNetReturnPct !== null && t.realizedNetReturnPct !== undefined
+      );
+
+      // If all trades have explicit return %, within single account they can be aggregated
+      if (tradesInScope.length > 0 && explicitPctTrades.length === tradesInScope.length) {
+        const sumPct = explicitPctTrades.reduce((acc, t) => acc + (t.realizedNetReturnPct || 0), 0);
+        return {
+          returnPct: Number(sumPct.toFixed(4)),
+          totalNetPnl: null,
+          totalReferenceCapital: 0,
+          isValid: true,
+          accountCount: 1,
+          coverage,
+        };
+      }
+
       return {
         returnPct: null,
-        totalNetPnl: 0,
+        totalNetPnl: null,
         totalReferenceCapital: 0,
         isValid: false,
         accountCount: 0,
+        coverage,
         errorReason: 'Cuenta seleccionada sin capital inicial positivo verificable',
       };
     }
 
-    const tradesInScope = trades.filter((t) => t.accountId === targetAccountId);
-    const totalNetPnl = tradesInScope.reduce((sum, t) => sum + (Number.isFinite(t.netPnl) ? t.netPnl : 0), 0);
-    const returnPct = (totalNetPnl / singleAccount.initialBalance) * 100;
+    const monetaryTrades = tradesInScope.filter((t) => t.calculationMode !== 'unrecorded');
+    const totalNetPnl = monetaryTrades.length > 0
+      ? monetaryTrades.reduce((sum, t) => sum + (Number.isFinite(t.netPnl) ? t.netPnl : 0), 0)
+      : null;
+
+    let returnPct: number | null = null;
+    if (totalNetPnl !== null) {
+      returnPct = (totalNetPnl / singleAccount.initialBalance) * 100;
+    } else {
+      const explicitPctTrades = tradesInScope.filter(
+        (t) => t.realizedNetReturnPct !== null && t.realizedNetReturnPct !== undefined
+      );
+      if (explicitPctTrades.length === tradesInScope.length && tradesInScope.length > 0) {
+        returnPct = explicitPctTrades.reduce((acc, t) => acc + (t.realizedNetReturnPct || 0), 0);
+      }
+    }
 
     return {
       returnPct,
@@ -142,101 +206,75 @@ export function calculateConsolidatedReturnPct(
       totalReferenceCapital: singleAccount.initialBalance,
       isValid: true,
       accountCount: 1,
+      coverage,
     };
   }
 
-  // Global Portfolio Scope ("All" or undefined targetAccountId)
-  const totalNetPnl = trades.reduce((sum, t) => sum + (Number.isFinite(t.netPnl) ? t.netPnl : 0), 0);
+  // 2. Portfolio Scope ("All" or undefined targetAccountId)
+  const monetaryTrades = trades.filter((t) => t.calculationMode !== 'unrecorded' && Number.isFinite(t.netPnl));
+  const totalNetPnl = monetaryTrades.length > 0
+    ? monetaryTrades.reduce((sum, t) => sum + t.netPnl, 0)
+    : null;
 
-  if (accounts.length === 0) {
+  if (verifiedAccounts.length === 0) {
+    // Check if trades have explicit return % on a single underlying account
+    const uniqueAccountIds = Array.from(new Set(trades.map((t) => t.accountId).filter(Boolean)));
+    const explicitPctTrades = trades.filter(
+      (t) => t.realizedNetReturnPct !== null && t.realizedNetReturnPct !== undefined
+    );
+
+    if (uniqueAccountIds.length <= 1 && trades.length > 0 && explicitPctTrades.length === trades.length) {
+      const sumPct = explicitPctTrades.reduce((acc, t) => acc + (t.realizedNetReturnPct || 0), 0);
+      return {
+        returnPct: Number(sumPct.toFixed(4)),
+        totalNetPnl: null,
+        totalReferenceCapital: 0,
+        isValid: true,
+        accountCount: uniqueAccountIds.length,
+        coverage,
+      };
+    }
+
     return {
       returnPct: null,
       totalNetPnl,
       totalReferenceCapital: 0,
       isValid: false,
       accountCount: 0,
-      errorReason: 'No hay cuentas operativas configuradas en el portafolio',
+      coverage,
+      errorReason: 'No hay cuentas con capital de referencia verificable',
     };
   }
 
-  // Validate that all accounts belonging to the portfolio have positive initial capital
-  for (const acc of accounts) {
-    if (!Number.isFinite(acc.initialBalance) || acc.initialBalance <= 0) {
-      return {
-        returnPct: null,
-        totalNetPnl,
-        totalReferenceCapital: 0,
-        isValid: false,
-        accountCount: accounts.length,
-        errorReason: `La cuenta "${acc.name || acc.id}" no tiene capital inicial positivo verificable`,
-      };
-    }
-  }
+  const totalReferenceCapital = verifiedAccounts.reduce((sum, a) => sum + a.initialBalance, 0);
 
-  const accountMap = new Map<string, PropAccount>();
-  for (const acc of accounts) {
-    accountMap.set(acc.id, acc);
-  }
-
-  // Validate that every trade points to an existing account in the portfolio
-  for (const t of trades) {
-    if (!t.accountId) {
-      return {
-        returnPct: null,
-        totalNetPnl,
-        totalReferenceCapital: 0,
-        isValid: false,
-        accountCount: accounts.length,
-        errorReason: 'Existen operaciones sin cuenta asignada',
-      };
-    }
-    const acc = accountMap.get(t.accountId);
-    if (!acc) {
-      return {
-        returnPct: null,
-        totalNetPnl,
-        totalReferenceCapital: 0,
-        isValid: false,
-        accountCount: accounts.length,
-        errorReason: `Operación asociada a cuenta inexistente o inválida: "${t.accountId}"`,
-      };
-    }
-  }
-
-  // Reference capital is the fixed sum of initial balances of all portfolio accounts
-  // (Each account included exactly once, regardless of trade count)
-  const totalReferenceCapital = accounts.reduce(
-    (sum, a) => sum + a.initialBalance,
-    0
-  );
-
-  if (totalReferenceCapital <= 0) {
+  if (totalNetPnl !== null && totalReferenceCapital > 0) {
+    const returnPct = (totalNetPnl / totalReferenceCapital) * 100;
     return {
-      returnPct: null,
+      returnPct,
       totalNetPnl,
-      totalReferenceCapital: 0,
-      isValid: false,
-      accountCount: accounts.length,
-      errorReason: 'El capital total de referencia no es mayor a cero',
+      totalReferenceCapital,
+      isValid: true,
+      accountCount: verifiedAccounts.length,
+      coverage,
     };
   }
 
-  const returnPct = (totalNetPnl / totalReferenceCapital) * 100;
   return {
-    returnPct,
+    returnPct: null,
     totalNetPnl,
     totalReferenceCapital,
-    isValid: true,
-    accountCount: accounts.length,
+    isValid: false,
+    accountCount: verifiedAccounts.length,
+    coverage,
   };
 }
 
 /**
  * Calculates daily percentage return over initial reference capital.
- * Returns null if no valid reference capital exists.
  */
 export function calculateDailyReturnPct(
-  dailyTrades: readonly { netPnl: number; accountId?: string }[],
+  dailyTrades: readonly Pick<Trade, 'netPnl' | 'accountId' | 'calculationMode' | 'realizedNetReturnPct' | 'rMultiple'>[],
   accounts: readonly PropAccount[],
   targetAccountId?: string
 ): number | null {
@@ -248,7 +286,7 @@ export function calculateDailyReturnPct(
  * Calculates monthly percentage return over initial reference capital.
  */
 export function calculateMonthlyReturnPct(
-  monthlyTrades: readonly { netPnl: number; accountId?: string }[],
+  monthlyTrades: readonly Pick<Trade, 'netPnl' | 'accountId' | 'calculationMode' | 'realizedNetReturnPct' | 'rMultiple'>[],
   accounts: readonly PropAccount[],
   targetAccountId?: string
 ): number | null {
@@ -260,28 +298,56 @@ export function calculateMonthlyReturnPct(
  * Calculates average win percentage return.
  */
 export function calculateAvgWinReturnPct(
-  wins: readonly { netPnl: number; accountId?: string }[],
+  wins: readonly Pick<Trade, 'netPnl' | 'accountId' | 'calculationMode' | 'realizedNetReturnPct' | 'rMultiple'>[],
   accounts: readonly PropAccount[],
   targetAccountId?: string
 ): number | null {
-  if (wins.length === 0) return 0;
-  const total = calculateConsolidatedReturnPct(wins, accounts, targetAccountId);
-  if (total.returnPct === null) return null;
-  return total.returnPct / wins.length;
+  const scopeWins = targetAccountId && targetAccountId !== 'All'
+    ? wins.filter((w) => w.accountId === targetAccountId)
+    : wins;
+  if (scopeWins.length === 0) return 0;
+  const verifiedAccounts = accounts.filter((a) => a.hasVerifiedBalance !== false && a.initialBalance > 0);
+  const accountMap = new Map<string, PropAccount>(verifiedAccounts.map((a) => [a.id, a]));
+
+  const validReturns: number[] = [];
+  for (const w of scopeWins) {
+    const acc = w.accountId ? accountMap.get(w.accountId) : undefined;
+    const ret = resolveTradeReturnPct(w, acc?.initialBalance);
+    if (ret !== null && Number.isFinite(ret)) {
+      validReturns.push(ret);
+    }
+  }
+
+  if (validReturns.length === 0) return null;
+  return validReturns.reduce((sum, r) => sum + r, 0) / validReturns.length;
 }
 
 /**
  * Calculates average loss percentage return (positive absolute percentage, e.g. 1.25%).
  */
 export function calculateAvgLossReturnPct(
-  losses: readonly { netPnl: number; accountId?: string }[],
+  losses: readonly Pick<Trade, 'netPnl' | 'accountId' | 'calculationMode' | 'realizedNetReturnPct' | 'rMultiple'>[],
   accounts: readonly PropAccount[],
   targetAccountId?: string
 ): number | null {
-  if (losses.length === 0) return 0;
-  const total = calculateConsolidatedReturnPct(losses, accounts, targetAccountId);
-  if (total.returnPct === null) return null;
-  return Math.abs(total.returnPct) / losses.length;
+  const scopeLosses = targetAccountId && targetAccountId !== 'All'
+    ? losses.filter((l) => l.accountId === targetAccountId)
+    : losses;
+  if (scopeLosses.length === 0) return 0;
+  const verifiedAccounts = accounts.filter((a) => a.hasVerifiedBalance !== false && a.initialBalance > 0);
+  const accountMap = new Map<string, PropAccount>(verifiedAccounts.map((a) => [a.id, a]));
+
+  const validReturns: number[] = [];
+  for (const l of scopeLosses) {
+    const acc = l.accountId ? accountMap.get(l.accountId) : undefined;
+    const ret = resolveTradeReturnPct(l, acc?.initialBalance);
+    if (ret !== null && Number.isFinite(ret)) {
+      validReturns.push(Math.abs(ret));
+    }
+  }
+
+  if (validReturns.length === 0) return null;
+  return validReturns.reduce((sum, r) => sum + r, 0) / validReturns.length;
 }
 
 /**
@@ -300,34 +366,20 @@ export function calculateExpectancyReturnPct(
 }
 
 /**
- * Calculates percentage equity curve and peak drawdown percentage.
- * Equity starts at initial capital (point #0: 0% return, 0% drawdown).
- * Peak drawdown formula:
- *   currentEquity = initialBalance + cumulativeNetPnl
- *   drawdownPct = ((peakEquity - currentEquity) / peakEquity) * 100
+ * Calculates percentage equity curve or pure R-Multiple curve.
+ * If verified reference capital exists, builds the percentage equity curve.
+ * If verified capital is absent or trades are unrecorded, builds a pure R-Multiple cumulative curve.
+ * Never mixes the two representations or plots unrecorded trades as flat $0!
  */
 export function calculatePercentageEquityCurve(
   chronologicalTrades: readonly Trade[],
   accounts: readonly PropAccount[],
   targetAccountId?: string
 ): PercentageEquityCurveResult {
-  const consolidated = calculateConsolidatedReturnPct(chronologicalTrades, accounts, targetAccountId);
-
-  if (!consolidated.isValid || consolidated.totalReferenceCapital <= 0) {
-    return {
-      points: [],
-      maxDrawdownPct: null,
-      currentReturnPct: null,
-      peakReturnPct: null,
-      bestTradeReturnPct: null,
-      worstTradeReturnPct: null,
-      referenceCapital: 0,
-      isValid: false,
-    };
-  }
-
-  const referenceCapital = consolidated.totalReferenceCapital;
-  const accountMap = new Map<string, PropAccount>(accounts.map((a) => [a.id, a]));
+  const verifiedAccounts = accounts.filter(
+    (a) => a.hasVerifiedBalance !== false && Number.isFinite(a.initialBalance) && a.initialBalance > 0
+  );
+  const accountMap = new Map<string, PropAccount>(verifiedAccounts.map((a) => [a.id, a]));
 
   const tradesInScope = targetAccountId && targetAccountId !== 'All'
     ? chronologicalTrades.filter((t) => t.accountId === targetAccountId)
@@ -337,6 +389,106 @@ export function calculatePercentageEquityCurve(
     (a, b) => a.entryDate.localeCompare(b.entryDate) || a.id.localeCompare(b.id)
   );
 
+  const hasMonetaryTrades = sortedTrades.some(
+    (t) => t.calculationMode !== 'unrecorded' && Number.isFinite(t.netPnl) && t.netPnl !== 0
+  );
+
+  // Check if we can build a valid percentage curve
+  const canBuildPercentageCurve = verifiedAccounts.length > 0 && hasMonetaryTrades;
+
+  if (!canBuildPercentageCurve) {
+    // Mode: R-Multiple Cumulative Curve
+    let cumulativeR = 0;
+    let peakR = 0;
+    let maxDrawdownR = 0;
+    let bestTradeR: number | null = null;
+    let worstTradeR: number | null = null;
+
+    const points: EquityPointPct[] = [];
+
+    // Point 0: Start at 0R
+    points.push({
+      tradeIndex: 0,
+      tradeLabel: 'Inicio',
+      date: sortedTrades[0]?.entryDate ? sortedTrades[0].entryDate.slice(0, 10) : 'Inicio',
+      time: '00:00',
+      symbol: '',
+      pnl: null,
+      tradeReturnPct: null,
+      tradeRMultiple: 0,
+      cumulativePnl: null,
+      cumulativeReturnPct: null,
+      cumulativeRMultiple: 0,
+      equity: null,
+      drawdownPct: null,
+      drawdownR: 0,
+    });
+
+    for (let i = 0; i < sortedTrades.length; i++) {
+      const t = sortedTrades[i];
+      const r = Number.isFinite(t.rMultiple) ? t.rMultiple : 0;
+      cumulativeR += r;
+
+      if (cumulativeR > peakR) {
+        peakR = cumulativeR;
+      }
+
+      const ddR = peakR - cumulativeR;
+      if (ddR > maxDrawdownR) {
+        maxDrawdownR = ddR;
+      }
+
+      if (bestTradeR === null || r > bestTradeR) {
+        bestTradeR = r;
+      }
+      if (worstTradeR === null || r < worstTradeR) {
+        worstTradeR = r;
+      }
+
+      const date = t.entryDate.slice(0, 10);
+      const time = t.entryDate.includes('T') ? t.entryDate.split('T')[1].slice(0, 5) : '';
+
+      points.push({
+        tradeIndex: i + 1,
+        tradeLabel: `#${i + 1}`,
+        date,
+        time,
+        timePrecision: t.timePrecision,
+        operationalWindow: t.operationalWindow,
+        symbol: t.symbol,
+        direction: t.direction,
+        pnl: t.calculationMode !== 'unrecorded' ? t.netPnl : null,
+        tradeReturnPct: t.realizedNetReturnPct ?? null,
+        tradeRMultiple: r,
+        cumulativePnl: null,
+        cumulativeReturnPct: null,
+        cumulativeRMultiple: Number(cumulativeR.toFixed(2)),
+        equity: null,
+        drawdownPct: null,
+        drawdownR: Number(ddR.toFixed(2)),
+      });
+    }
+
+    return {
+      curveMode: 'r_multiple',
+      points,
+      maxDrawdownPct: null,
+      maxDrawdownR: Number(maxDrawdownR.toFixed(2)),
+      currentReturnPct: null,
+      currentReturnR: Number(cumulativeR.toFixed(2)),
+      peakReturnPct: null,
+      peakReturnR: Number(peakR.toFixed(2)),
+      bestTradeReturnPct: null,
+      bestTradeR,
+      worstTradeReturnPct: null,
+      worstTradeR,
+      referenceCapital: 0,
+      isValid: sortedTrades.length > 0,
+    };
+  }
+
+  // Mode: Percentage Equity Curve
+  const referenceCapital = verifiedAccounts.reduce((sum, a) => sum + a.initialBalance, 0);
   let cumulativePnl = 0;
   let hasEstimatedInCumulative = false;
   let peakEquity = referenceCapital;
@@ -346,7 +498,6 @@ export function calculatePercentageEquityCurve(
 
   const points: EquityPointPct[] = [];
 
-  // Point #0: Initial state before any trade executed
   points.push({
     tradeIndex: 0,
     tradeLabel: 'Inicio',
@@ -355,8 +506,10 @@ export function calculatePercentageEquityCurve(
     symbol: '',
     pnl: 0,
     tradeReturnPct: 0,
+    tradeRMultiple: 0,
     cumulativePnl: 0,
     cumulativeReturnPct: 0,
+    cumulativeRMultiple: 0,
     equity: referenceCapital,
     drawdownPct: 0,
   });
@@ -381,7 +534,6 @@ export function calculatePercentageEquityCurve(
     }
 
     const cumulativeReturnPct = (cumulativePnl / referenceCapital) * 100;
-
     const tradeAcc = accountMap.get(t.accountId);
     const tradeInitialBalance = tradeAcc?.initialBalance ?? referenceCapital;
     const tradeReturnPct = resolveTradeReturnPct(t, tradeInitialBalance);
@@ -411,6 +563,7 @@ export function calculatePercentageEquityCurve(
       direction: t.direction,
       pnl: t.netPnl,
       tradeReturnPct,
+      tradeRMultiple: t.rMultiple,
       cumulativePnl: Number(cumulativePnl.toFixed(2)),
       cumulativeReturnPct: Number(cumulativeReturnPct.toFixed(4)),
       equity: Number(currentEquity.toFixed(2)),
@@ -422,6 +575,7 @@ export function calculatePercentageEquityCurve(
   const peakReturnPct = ((peakEquity - referenceCapital) / referenceCapital) * 100;
 
   return {
+    curveMode: 'percentage',
     points,
     maxDrawdownPct: Number(maxDrawdownPct.toFixed(2)),
     currentReturnPct: Number(currentReturnPct.toFixed(2)),
@@ -434,8 +588,7 @@ export function calculatePercentageEquityCurve(
 }
 
 /**
- * Calculates operational window statistics with percentage returns.
- * Retains exact 9:30–10:35 and 10:35–11:00 NY boundary logic from date-time-service.
+ * Calculates operational window statistics with percentage returns and R totals.
  */
 export function calculateOperationalWindowReturnStats(
   trades: readonly Trade[],
@@ -445,8 +598,6 @@ export function calculateOperationalWindowReturnStats(
   const baseStats = calculateOperationalWindowStats(trades);
 
   const windows: OperationalWindowReturnItem[] = baseStats.windows.map((w) => {
-    // Select trades belonging to this window
-    // (using the exact classification ID)
     const windowTrades = trades.filter((t) => {
       const parts = t.entryDate.includes('T') ? t.entryDate.split('T')[1] : '';
       if (!parts) return false;
@@ -461,13 +612,15 @@ export function calculateOperationalWindowReturnStats(
       return false;
     });
 
+    const sumR = windowTrades.reduce((acc, t) => acc + (Number.isFinite(t.rMultiple) ? t.rMultiple : 0), 0);
     const returnPct = windowTrades.length > 0
       ? calculateConsolidatedReturnPct(windowTrades, accounts, targetAccountId).returnPct
-      : (accounts.length > 0 && accounts.every((a) => a.initialBalance > 0) ? 0 : null);
+      : null;
 
     return {
       ...w,
       returnPct: returnPct !== null ? Number(returnPct.toFixed(2)) : null,
+      sumR: Number(sumR.toFixed(2)),
     };
   });
 
@@ -480,7 +633,7 @@ export function calculateOperationalWindowReturnStats(
 }
 
 /**
- * Calculates weekday statistics (Lun - Vie) with percentage returns.
+ * Calculates weekday statistics (Lun - Vie) with percentage returns and R totals.
  */
 export function calculateWeekdayReturnStats(
   trades: readonly Trade[],
@@ -502,16 +655,22 @@ export function calculateWeekdayReturnStats(
       return utcDay === dayIndex;
     });
 
-    const pnl = Number(dayTrades.reduce((acc, t) => acc + t.netPnl, 0).toFixed(2));
+    const monetaryTrades = dayTrades.filter((t) => t.calculationMode !== 'unrecorded');
+    const pnl = monetaryTrades.length > 0
+      ? Number(monetaryTrades.reduce((acc, t) => acc + t.netPnl, 0).toFixed(2))
+      : null;
+
+    const sumR = Number(dayTrades.reduce((acc, t) => acc + (Number.isFinite(t.rMultiple) ? t.rMultiple : 0), 0).toFixed(2));
     const returnPct = dayTrades.length > 0
       ? calculateConsolidatedReturnPct(dayTrades, accounts, targetAccountId).returnPct
-      : (accounts.length > 0 && accounts.every((a) => a.initialBalance > 0) ? 0 : null);
+      : null;
 
     return {
       day,
       dayIndex,
       pnl,
       returnPct: returnPct !== null ? Number(returnPct.toFixed(2)) : null,
+      sumR,
       trades: dayTrades.length,
     };
   });
@@ -519,7 +678,7 @@ export function calculateWeekdayReturnStats(
 
 /**
  * Consistent percentage return formatter:
- * e.g. +2.00%, -1.25%, 0.00%, or "Sin capital de ref."
+ * e.g. +2.00%, -1.25%, 0.00%, or "Sin dato"
  */
 export function formatReturnPct(
   value: number | null | undefined,

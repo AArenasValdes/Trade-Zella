@@ -171,13 +171,49 @@ export const INSTRUMENT_SPECS: Record<
   string,
   { pointValue: number; label: string; category: 'Futures' | 'Forex' | 'Metals' | 'Indices' }
 > = {
-  NAS100: { pointValue: 1, label: 'NAS100 CFD Funding Pips ($1/pt por lote)', category: 'Indices' },
+  NAS100: { pointValue: 1, label: 'NAS100 CFD ($1/pt por lote)', category: 'Indices' },
+  NQ: { pointValue: 20, label: 'E-mini Nasdaq Futuros ($20/pt)', category: 'Futures' },
   'NQ1!': { pointValue: 20, label: 'Contrato Actual NQ Futuros ($20/pt)', category: 'Futures' },
+  MNQ: { pointValue: 2, label: 'Micro NQ Futuros ($2/pt)', category: 'Futures' },
   'MNQ1!': { pointValue: 2, label: 'Micro NQ Futuros ($2/pt)', category: 'Futures' },
-  'ES1!': { pointValue: 50, label: 'E-mini S&P 500 ($50/pt)', category: 'Futures' },
+  ES: { pointValue: 50, label: 'E-mini S&P 500 Futuros ($50/pt)', category: 'Futures' },
+  'ES1!': { pointValue: 50, label: 'E-mini S&P 500 Futuros ($50/pt)', category: 'Futures' },
+  MES: { pointValue: 5, label: 'Micro E-mini S&P 500 Futuros ($5/pt)', category: 'Futures' },
+  'MES1!': { pointValue: 5, label: 'Micro E-mini S&P 500 Futuros ($5/pt)', category: 'Futures' },
   US30: { pointValue: 1, label: 'US30 CFD ($1/pt)', category: 'Indices' },
+  SP500: { pointValue: 1, label: 'S&P 500 CFD ($1/pt)', category: 'Indices' },
   XAUUSD: { pointValue: 100, label: 'Oro Spot ($100/lote por $1)', category: 'Metals' },
+  EURUSD: { pointValue: 10, label: 'EUR/USD Forex ($10/pip)', category: 'Forex' },
 };
+
+export function getInstrumentSpec(symbol: string): {
+  pointValue: number;
+  label: string;
+  category: 'Futures' | 'Forex' | 'Metals' | 'Indices' | 'Custom';
+  verified: boolean;
+} {
+  const clean = symbol.trim().toUpperCase();
+  if (INSTRUMENT_SPECS[clean]) {
+    return { ...INSTRUMENT_SPECS[clean], verified: true };
+  }
+  if (clean.endsWith('1!')) {
+    const base = clean.slice(0, -2);
+    if (INSTRUMENT_SPECS[base]) {
+      return { ...INSTRUMENT_SPECS[base], verified: true };
+    }
+  } else {
+    const with1 = `${clean}1!`;
+    if (INSTRUMENT_SPECS[with1]) {
+      return { ...INSTRUMENT_SPECS[with1], verified: true };
+    }
+  }
+  return {
+    pointValue: 1,
+    label: `${clean} (Genérico $1/pt no auditado)`,
+    category: 'Custom',
+    verified: false,
+  };
+}
 
 export const DEFAULT_PLAYBOOKS: ICTPlaybook[] = [];
 

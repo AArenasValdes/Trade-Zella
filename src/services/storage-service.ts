@@ -155,18 +155,83 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
     const explicitPnl = parseCsvNumber(
       row['pnl'] || row['profit'] || row['net pnl'] || row['resultado'] || row['ganancia']
     );
-    const finalNetPnl = !isNaN(explicitPnl) ? explicitPnl : calc.netPnl;
     const explicitR = parseCsvNumber(
       row['r'] || row['rr'] || row['r-multiple'] || row['r multiple'] || row['r_multiple']
     );
     const explicitReturnPct = parseCsvNumber(
       row['return'] || row['retorno'] || row['%'] || row['return %'] || row['retorno %']
     );
-    const explicitDuration = parseCsvNumber(
-      row['duration'] || row['duracion'] || row['minutes'] || row['minutos']
-    );
 
-    const hasPrices = entryPrice > 0 || exitPrice > 0;
+    // Duration: strictly accept integer minutes and reject decimal values without silently rounding
+    const rawDurationStr = (row['duration'] || row['duracion'] || row['minutes'] || row['minutos'] || '').trim();
+    let finalDuration: number | null = null;
+    if (rawDurationStr !== '') {
+      if (/^\d+$/.test(rawDurationStr)) {
+        finalDuration = parseInt(rawDurationStr, 10);
+      } else {
+        finalDuration = null;
+      }
+    }
+
+    const hasPrices = entryPrice > 0 && exitPrice > 0;
+    const finalNetPnl = !isNaN(explicitPnl) ? explicitPnl : (hasPrices ? calc.netPnl : 0);
+
+    // Explicit outcome column
+    const explicitStatusRaw = (row['status'] || row['estado'] || row['outcome'] || row['resultado_operacion'] || '').trim().toLowerCase();
+    const explicitStatus: 'Win' | 'Loss' | null =
+      explicitStatusRaw === 'win' || explicitStatusRaw === 'tp' || explicitStatusRaw === 'ganada'
+        ? 'Win'
+        : explicitStatusRaw === 'loss' || explicitStatusRaw === 'sl' || explicitStatusRaw === 'perdida'
+        ? 'Loss'
+        : null;
+
+    // Check for contradictory signals
+    const conflicts: string[] = [];
+    if (!isNaN(explicitR) && !isNaN(explicitPnl)) {
+      if (explicitR > 0 && explicitPnl < 0) {
+        conflicts.push('R positivo con PnL negativo');
+      } else if (explicitR < 0 && explicitPnl > 0) {
+        conflicts.push('R negativo con PnL positivo');
+      }
+    }
+    if (explicitStatus && !isNaN(explicitR)) {
+      if (explicitStatus === 'Win' && explicitR < 0) {
+        conflicts.push('Estado Win con R negativo');
+      } else if (explicitStatus === 'Loss' && explicitR > 0) {
+        conflicts.push('Estado Loss con R positivo');
+      }
+    }
+
+    // Consistent classification rule priority:
+    // 1. Explicit PnL if non-zero
+    // 2. Explicit R if non-zero
+    // 3. Explicit Return % if non-zero
+    // 4. Explicit Status
+    // 5. Prices math
+    // 6. Default to Loss
+    let status: 'Win' | 'Loss';
+    if (!isNaN(explicitPnl) && explicitPnl !== 0) {
+      status = explicitPnl > 0 ? 'Win' : 'Loss';
+    } else if (!isNaN(explicitR) && explicitR !== 0) {
+      status = explicitR > 0 ? 'Win' : 'Loss';
+    } else if (!isNaN(explicitReturnPct) && explicitReturnPct !== 0) {
+      status = explicitReturnPct > 0 ? 'Win' : 'Loss';
+    } else if (explicitStatus) {
+      status = explicitStatus;
+    } else if (hasPrices && calc.netPnl !== 0) {
+      status = calc.netPnl > 0 ? 'Win' : 'Loss';
+    } else {
+      status = 'Loss';
+    }
+
+    const finalR = !isNaN(explicitR)
+      ? explicitR
+      : (calc.rMultiple !== 0 ? calc.rMultiple : (status === 'Win' ? 2 : -1));
+
+    let rowNotes = row['notes'] || row['notas'] || 'Importado desde CSV (Notion / TradingView)';
+    if (conflicts.length > 0) {
+      rowNotes = `[Conflicto importación: ${conflicts.join(', ')}] ${rowNotes}`;
+    }
 
     imported.push({
       id: `imp-${Date.now()}-${i}`,
@@ -184,8 +249,8 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
       commission,
       netPnl: finalNetPnl,
       plannedRR: calc.plannedRR || 2,
-      rMultiple: !isNaN(explicitR) ? explicitR : calc.rMultiple || (finalNetPnl > 0 ? 2 : -1),
-      status: finalNetPnl > 0 ? 'Win' : 'Loss',
+      rMultiple: finalR,
+      status,
       killzone: detectKillzoneFromTime(formattedDate),
       pdArrays: ['Contexto HTF (1D/4H/2H/30m)'],
       checklistCompleted: ICT_CHECKLIST_ITEMS,
@@ -195,12 +260,12 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
       timeframe: '15m',
       followedPlan: true,
       psychologyTag: 'A+ Alineado al Contexto HTF',
-      notes: row['notes'] || row['notas'] || 'Importado desde CSV (Notion / TradingView)',
+      notes: rowNotes,
       accountId: targetAccountId,
       calculationMode: hasPrices || !isNaN(explicitPnl) ? 'monetary' : 'unrecorded',
       pricesUnrecorded: !hasPrices,
       realizedNetReturnPct: !isNaN(explicitReturnPct) ? explicitReturnPct : null,
-      durationMinutes: !isNaN(explicitDuration) && explicitDuration >= 0 ? Math.round(explicitDuration) : null,
+      durationMinutes: finalDuration,
     });
   }
 
