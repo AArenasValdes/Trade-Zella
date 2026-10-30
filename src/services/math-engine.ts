@@ -185,36 +185,48 @@ export function calculateDashboardMetrics(
   const sorted = [...trades].sort(
     (a, b) => a.entryDate.localeCompare(b.entryDate) || a.id.localeCompare(b.id)
   );
-  const wins = sorted.filter((t) => t.netPnl > 0);
-  const losses = sorted.filter((t) => t.netPnl < 0);
+  // Status-based wins and losses (accurate for R-only, % return and monetary trades alike)
+  const wins = sorted.filter((t) => t.status === 'Win');
+  const losses = sorted.filter((t) => t.status === 'Loss');
 
-  const netPnl = Number(sorted.reduce((acc, t) => acc + t.netPnl, 0).toFixed(2));
-  const grossProfit = Number(wins.reduce((acc, t) => acc + t.netPnl, 0).toFixed(2));
-  const grossLoss = Number(Math.abs(losses.reduce((acc, t) => acc + t.netPnl, 0)).toFixed(2));
+  // Monetary calculations are isolated to trades with verified monetary results
+  const monetaryTrades = sorted.filter(
+    (t) => t.calculationMode !== 'unrecorded' && Number.isFinite(t.netPnl)
+  );
+  const monetaryWins = monetaryTrades.filter((t) => t.netPnl > 0);
+  const monetaryLosses = monetaryTrades.filter((t) => t.netPnl < 0);
+
+  const netPnl = Number(monetaryTrades.reduce((acc, t) => acc + t.netPnl, 0).toFixed(2));
+  const grossProfit = Number(monetaryWins.reduce((acc, t) => acc + t.netPnl, 0).toFixed(2));
+  const grossLoss = Number(Math.abs(monetaryLosses.reduce((acc, t) => acc + t.netPnl, 0)).toFixed(2));
   const totalCommissions = Number(
-    sorted.reduce((acc, t) => acc + (t.commission || 0), 0).toFixed(2)
+    monetaryTrades.reduce((acc, t) => acc + (t.commission || 0), 0).toFixed(2)
   );
 
   const totalTrades = sorted.length;
-  const winRate = Number(((wins.length / totalTrades) * 100).toFixed(1));
-  const lossRate = losses.length / totalTrades;
+  const winRate = totalTrades > 0 ? Number(((wins.length / totalTrades) * 100).toFixed(1)) : 0;
+  const lossRate = totalTrades > 0 ? losses.length / totalTrades : 0;
 
-  const profitFactor =
-    grossLoss === 0
-      ? grossProfit > 0
-        ? 10.0
-        : 0
-      : Number((grossProfit / grossLoss).toFixed(2));
+  // Profit factor: uses monetary figures if available, or R-multiple if purely R-based
+  let profitFactor = 0;
+  if (grossLoss > 0 || grossProfit > 0) {
+    profitFactor = grossLoss === 0 ? (grossProfit > 0 ? 10.0 : 0) : Number((grossProfit / grossLoss).toFixed(2));
+  } else {
+    const sumWinR = wins.reduce((acc, t) => acc + (t.rMultiple > 0 ? t.rMultiple : 0), 0);
+    const sumLossR = Math.abs(losses.reduce((acc, t) => acc + (t.rMultiple < 0 ? t.rMultiple : 0), 0));
+    profitFactor = sumLossR === 0 ? (sumWinR > 0 ? 10.0 : 0) : Number((sumWinR / sumLossR).toFixed(2));
+  }
 
-  const avgWin = wins.length > 0 ? Number((grossProfit / wins.length).toFixed(2)) : 0;
-  const avgLoss = losses.length > 0 ? Number((grossLoss / losses.length).toFixed(2)) : 0;
+  const avgWin = monetaryWins.length > 0 ? Number((grossProfit / monetaryWins.length).toFixed(2)) : 0;
+  const avgLoss = monetaryLosses.length > 0 ? Number((grossLoss / monetaryLosses.length).toFixed(2)) : 0;
   const winLossRatio =
     avgLoss === 0 ? (avgWin > 0 ? 5.0 : 0) : Number((avgWin / avgLoss).toFixed(2));
 
   const expectancy = Number(((winRate / 100) * avgWin - lossRate * avgLoss).toFixed(2));
-  const avgRMultiple = Number(
-    (sorted.reduce((acc, t) => acc + t.rMultiple, 0) / totalTrades).toFixed(2)
-  );
+  const tradesWithR = sorted.filter((t) => Number.isFinite(t.rMultiple));
+  const avgRMultiple = tradesWithR.length > 0
+    ? Number((tradesWithR.reduce((acc, t) => acc + t.rMultiple, 0) / tradesWithR.length).toFixed(2))
+    : 0;
 
   let peak = 0;
   let equity = 0;
@@ -235,7 +247,7 @@ export function calculateDashboardMetrics(
   let streakCount = 0;
   for (let i = sorted.length - 1; i >= 0; i--) {
     const t = sorted[i];
-    const currentType = t.netPnl > 0 ? 'Win' : t.netPnl < 0 ? 'Loss' : 'None';
+    const currentType = t.status === 'Win' ? 'Win' : t.status === 'Loss' ? 'Loss' : 'None';
     if (currentType === 'None') continue;
     if (streakType === 'None') {
       streakType = currentType;
@@ -254,18 +266,18 @@ export function calculateDashboardMetrics(
     count: longs.length,
     winRate:
       longs.length > 0
-        ? Math.round((longs.filter((t) => t.netPnl > 0).length / longs.length) * 100)
+        ? Math.round((longs.filter((t) => t.status === 'Win').length / longs.length) * 100)
         : 0,
-    netPnl: Number(longs.reduce((a, b) => a + b.netPnl, 0).toFixed(2)),
+    netPnl: Number(longs.filter((t) => t.calculationMode !== 'unrecorded' && Number.isFinite(t.netPnl)).reduce((a, b) => a + b.netPnl, 0).toFixed(2)),
   };
 
   const shortStats = {
     count: shorts.length,
     winRate:
       shorts.length > 0
-        ? Math.round((shorts.filter((t) => t.netPnl > 0).length / shorts.length) * 100)
+        ? Math.round((shorts.filter((t) => t.status === 'Win').length / shorts.length) * 100)
         : 0,
-    netPnl: Number(shorts.reduce((a, b) => a + b.netPnl, 0).toFixed(2)),
+    netPnl: Number(shorts.filter((t) => t.calculationMode !== 'unrecorded' && Number.isFinite(t.netPnl)).reduce((a, b) => a + b.netPnl, 0).toFixed(2)),
   };
 
   const planComplianceRate = Number(

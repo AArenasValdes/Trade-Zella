@@ -4,7 +4,7 @@ import React, { useState, useMemo } from 'react';
 import { useTrading } from '@/context/TradingContext';
 import type { Trade, TradeFilters } from '@/types/trading';
 import { resolveTradeImage } from '@/services/storage-service';
-import { calculateTradeReturnPct, formatReturnPct } from '@/services/financial-engine';
+import { resolveTradeReturnPct, formatReturnPct } from '@/services/financial-engine';
 import { KILLZONES } from '@/config/ict-constants';
 import {
   Search,
@@ -57,16 +57,16 @@ export function JournalView({ onInspectTrade, onEditTrade }: JournalViewProps) {
 
     if (sortBy === 'return-desc' || sortBy === 'pnl-desc') {
       return copy.sort((a, b) => {
-        const retA = calculateTradeReturnPct(a.netPnl, accountMap.get(a.accountId)?.initialBalance) ?? -Infinity;
-        const retB = calculateTradeReturnPct(b.netPnl, accountMap.get(b.accountId)?.initialBalance) ?? -Infinity;
+        const retA = resolveTradeReturnPct(a, accountMap.get(a.accountId)?.initialBalance) ?? -Infinity;
+        const retB = resolveTradeReturnPct(b, accountMap.get(b.accountId)?.initialBalance) ?? -Infinity;
         if (retB !== retA) return retB - retA;
         return b.netPnl - a.netPnl || b.id.localeCompare(a.id);
       });
     }
     if (sortBy === 'return-asc' || sortBy === 'pnl-asc') {
       return copy.sort((a, b) => {
-        const retA = calculateTradeReturnPct(a.netPnl, accountMap.get(a.accountId)?.initialBalance) ?? Infinity;
-        const retB = calculateTradeReturnPct(b.netPnl, accountMap.get(b.accountId)?.initialBalance) ?? Infinity;
+        const retA = resolveTradeReturnPct(a, accountMap.get(a.accountId)?.initialBalance) ?? Infinity;
+        const retB = resolveTradeReturnPct(b, accountMap.get(b.accountId)?.initialBalance) ?? Infinity;
         if (retA !== retB) return retA - retB;
         return a.netPnl - b.netPnl || a.id.localeCompare(b.id);
       });
@@ -267,6 +267,11 @@ export function JournalView({ onInspectTrade, onEditTrade }: JournalViewProps) {
                         <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-white/[0.06]">
                           {trade.timeframe}
                         </span>
+                        {trade.durationMinutes !== null && trade.durationMinutes !== undefined && (
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-white/[0.06]">
+                            {trade.durationMinutes} min
+                          </span>
+                        )}
                         {hasImg && (
                           <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 ${theme.badgeClass}`}>
                             <Eye className="w-3 h-3" /> Chart
@@ -378,24 +383,41 @@ export function JournalView({ onInspectTrade, onEditTrade }: JournalViewProps) {
                     <td className="py-4 px-5 text-right">
                       {(() => {
                         const acc = accounts.find((a) => a.id === trade.accountId);
-                        const retPct = calculateTradeReturnPct(trade.netPnl, acc?.initialBalance);
+                        const retPct = resolveTradeReturnPct(trade, acc?.initialBalance);
+                        const isUnrecorded = trade.calculationMode === 'unrecorded';
+                        const isPositive = retPct !== null ? retPct >= 0 : (trade.status === 'Win' || trade.netPnl >= 0);
+
                         return (
                           <>
                             <span
                               className={`font-extrabold tabular-nums text-base block ${
-                                trade.netPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                                retPct === null && isUnrecorded
+                                  ? 'text-zinc-500'
+                                  : isPositive
+                                  ? 'text-emerald-400'
+                                  : 'text-rose-400'
                               }`}
                             >
-                              {formatReturnPct(retPct, {
-                                fallback: trade.netPnl >= 0 ? `+$${trade.netPnl.toFixed(2)}` : `-$${Math.abs(trade.netPnl).toFixed(2)}`,
-                              })}
+                              {retPct !== null
+                                ? formatReturnPct(retPct)
+                                : isUnrecorded
+                                ? 'Sin dato'
+                                : formatReturnPct(null, {
+                                    fallback: trade.netPnl >= 0 ? `+$${trade.netPnl.toFixed(2)}` : `-$${Math.abs(trade.netPnl).toFixed(2)}`,
+                                  })}
                             </span>
                             <span className="text-[11px] text-zinc-500 tabular-nums">
-                              {trade.calculationMode === 'derived_r' ? '~' : ''}
-                              {trade.netPnl >= 0
-                                ? `+$${trade.netPnl.toFixed(2)}`
-                                : `-$${Math.abs(trade.netPnl).toFixed(2)}`}
-                              {trade.calculationMode === 'derived_r' ? ' (derivado)' : ''}
+                              {isUnrecorded ? (
+                                'Sin dato'
+                              ) : (
+                                <>
+                                  {trade.calculationMode === 'derived_r' ? '~' : ''}
+                                  {trade.netPnl >= 0
+                                    ? `+$${trade.netPnl.toFixed(2)}`
+                                    : `-$${Math.abs(trade.netPnl).toFixed(2)}`}
+                                  {trade.calculationMode === 'derived_r' ? ' (derivado)' : ''}
+                                </>
+                              )}
                             </span>
                           </>
                         );

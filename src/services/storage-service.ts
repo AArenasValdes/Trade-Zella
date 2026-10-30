@@ -159,6 +159,14 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
     const explicitR = parseCsvNumber(
       row['r'] || row['rr'] || row['r-multiple'] || row['r multiple'] || row['r_multiple']
     );
+    const explicitReturnPct = parseCsvNumber(
+      row['return'] || row['retorno'] || row['%'] || row['return %'] || row['retorno %']
+    );
+    const explicitDuration = parseCsvNumber(
+      row['duration'] || row['duracion'] || row['minutes'] || row['minutos']
+    );
+
+    const hasPrices = entryPrice > 0 || exitPrice > 0;
 
     imported.push({
       id: `imp-${Date.now()}-${i}`,
@@ -189,6 +197,10 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
       psychologyTag: 'A+ Alineado al Contexto HTF',
       notes: row['notes'] || row['notas'] || 'Importado desde CSV (Notion / TradingView)',
       accountId: targetAccountId,
+      calculationMode: hasPrices || !isNaN(explicitPnl) ? 'monetary' : 'unrecorded',
+      pricesUnrecorded: !hasPrices,
+      realizedNetReturnPct: !isNaN(explicitReturnPct) ? explicitReturnPct : null,
+      durationMinutes: !isNaN(explicitDuration) && explicitDuration >= 0 ? Math.round(explicitDuration) : null,
     });
   }
 

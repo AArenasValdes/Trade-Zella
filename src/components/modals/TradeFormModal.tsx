@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from 'react';
-import { useTrading, resolveTargetAccount } from '@/context/TradingContext';
+import { useTrading } from '@/context/TradingContext';
 import {
   Trade,
   TradeDirection,
@@ -11,9 +11,7 @@ import {
 import {
   INSTRUMENT_SPECS,
   PSYCHOLOGY_TAGS,
-  ICT_CHECKLIST_ITEMS,
 } from '@/config/ict-constants';
-import { calculateSetupGrade } from '@/services/math-engine';
 import {
   extractNyDateKey,
   getCurrentNyDateKey,
@@ -22,9 +20,7 @@ import {
 import {
   X,
   ClipboardPaste,
-  CheckSquare,
   Image as ImageIcon,
-  AlertTriangle,
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
@@ -38,23 +34,20 @@ interface TradeFormModalProps {
 }
 
 interface TradeFormState {
+  dateKey: string;
   symbol: string;
   direction: TradeDirection | '';
   selectedWindow: 'window_1' | 'window_2';
-  riskPercentUsed: '1.0' | '1.5' | '2.0';
   outcomeMode: 'TP' | 'SL';
   rMultiple: string;
-  playbookId: string;
-  pdArrays: PDArray[];
-  checklistCompleted: string[];
-  dailyBias: 'Bullish' | 'Bearish' | 'Neutral';
-  dolTarget: string;
-  followedPlan: boolean;
+  realizedNetReturnPct: string;
+  durationMinutes: string;
+  selectedModel: PDArray;
   psychologyTag: PsychologyTag;
   tradingViewUrl: string;
   screenshotDataUrl: string;
   notes: string;
-  // Optional secondary prices
+  // Optional experimental prices
   entryPrice: string;
   stopLoss: string;
   takeProfit: string;
@@ -80,42 +73,21 @@ function TradeFormModalContent({
 }: Omit<TradeFormModalProps, 'isOpen'>) {
   const {
     accounts,
-    dailyNotes,
     defaultAccountId,
-    setDefaultAccountId,
     addTrade,
     updateTrade,
     addAccount,
-    saveDailyNote,
     theme,
   } = useTrading();
 
   const [formError, setFormError] = useState<string | null>(null);
-  const [resolveNoTradeConfirmed, setResolveNoTradeConfirmed] = useState(false);
-  const [pendingDefaultAccount, setPendingDefaultAccount] = useState<string>('');
-  const [newAccName, setNewAccName] = useState('Cuenta Principal');
-  const [newAccFirm, setNewAccFirm] = useState('Funding Pips');
-  const [newAccBalance, setNewAccBalance] = useState('100000');
   const [showOptionalPrices, setShowOptionalPrices] = useState(
     Boolean(editingTrade && (editingTrade.entryPrice > 0 || editingTrade.exitPrice > 0))
   );
 
-  const entryDateKey = editingTrade
-    ? extractNyDateKey(editingTrade.entryDate)
-    : extractNyDateKey(initialEntryDate) || getCurrentNyDateKey();
-
-  const conflictingDailyNote =
-    entryDateKey && dailyNotes[entryDateKey]?.noTrade
-      ? dailyNotes[entryDateKey]
-      : null;
-
-  // Resolve target account according to strict multi-account policy
-  const accountResolution = resolveTargetAccount(
-    accounts,
-    defaultAccountId,
-    editingTrade?.accountId
-  );
-  const targetAccount = accountResolution.account;
+  const initialDateKey = editingTrade
+    ? extractNyDateKey(editingTrade.entryDate) || editingTrade.entryDate.slice(0, 10)
+    : extractNyDateKey(initialEntryDate) || initialEntryDate.slice(0, 10) || getCurrentNyDateKey();
 
   // Initial window determination
   const initialWindow: 'window_1' | 'window_2' = editingTrade?.operationalWindow
@@ -128,23 +100,21 @@ function TradeFormModalContent({
       : 'window_1'
     : 'window_1';
 
-  const isHistoricalMonetary = Boolean(
-    editingTrade && editingTrade.calculationMode !== 'derived_r'
-  );
+  // Determine initial model (preserving historical models if editing)
+  const initialModel: PDArray = (() => {
+    if (editingTrade?.pdArrays && editingTrade.pdArrays.length > 0) {
+      return editingTrade.pdArrays[0];
+    }
+    return 'Breaker Block';
+  })();
 
   const [form, setForm] = useState<TradeFormState>(() => {
     if (editingTrade) {
       return {
+        dateKey: initialDateKey,
         symbol: editingTrade.symbol,
         direction: editingTrade.direction,
         selectedWindow: initialWindow,
-        riskPercentUsed: (
-          editingTrade.riskPercentUsed === 1.5
-            ? '1.5'
-            : editingTrade.riskPercentUsed === 2
-            ? '2.0'
-            : '1.0'
-        ) as '1.0' | '1.5' | '2.0',
         outcomeMode: editingTrade.status === 'Win' ? 'TP' : 'SL',
         rMultiple: (() => {
           const val = Math.abs(editingTrade.rMultiple);
@@ -157,12 +127,13 @@ function TradeFormModalContent({
           }
           return '2.0';
         })(),
-        playbookId: editingTrade.playbookId || '',
-        pdArrays: editingTrade.pdArrays || [],
-        checklistCompleted: editingTrade.checklistCompleted || [],
-        dailyBias: editingTrade.dailyBias || 'Neutral',
-        dolTarget: editingTrade.dolTarget || '',
-        followedPlan: editingTrade.followedPlan,
+        realizedNetReturnPct: editingTrade.realizedNetReturnPct !== null && editingTrade.realizedNetReturnPct !== undefined
+          ? Math.abs(editingTrade.realizedNetReturnPct).toString()
+          : '',
+        durationMinutes: editingTrade.durationMinutes !== null && editingTrade.durationMinutes !== undefined
+          ? editingTrade.durationMinutes.toString()
+          : '',
+        selectedModel: initialModel,
         psychologyTag: editingTrade.psychologyTag,
         tradingViewUrl: editingTrade.tradingViewUrl || '',
         screenshotDataUrl: editingTrade.screenshotDataUrl || '',
@@ -176,18 +147,15 @@ function TradeFormModalContent({
     }
 
     return {
+      dateKey: initialDateKey,
       symbol: prefillData?.symbol || 'NAS100',
       direction: prefillData?.direction || '',
       selectedWindow: 'window_1',
-      riskPercentUsed: '1.0',
       outcomeMode: 'TP',
       rMultiple: '2.0',
-      playbookId: '',
-      pdArrays: [],
-      checklistCompleted: [],
-      dailyBias: 'Neutral',
-      dolTarget: '',
-      followedPlan: false,
+      realizedNetReturnPct: '',
+      durationMinutes: '',
+      selectedModel: 'Breaker Block',
       psychologyTag: 'Sin clasificar',
       tradingViewUrl: '',
       screenshotDataUrl: '',
@@ -200,38 +168,20 @@ function TradeFormModalContent({
     };
   });
 
-  // Calculate real-time derived return % and derived Net P&L
-  const riskNum = parseFloat(form.riskPercentUsed) || 1.0;
+  // Available models for selection: Breaker Block, Key Level, plus historical model if editing
+  const availableModels: PDArray[] = ['Breaker Block', 'Key Level'];
+  if (editingTrade?.pdArrays) {
+    for (const model of editingTrade.pdArrays) {
+      if (!availableModels.includes(model)) {
+        availableModels.push(model);
+      }
+    }
+  }
+
   const normalizedRMultiple = form.rMultiple.trim().replace(',', '.');
   const parsedRMultiple = Number(normalizedRMultiple);
-  // A partial value (e.g. just a comma) must not render NaN% while typing.
   const rMultipleNum = Number.isFinite(parsedRMultiple) ? parsedRMultiple : 0;
   const signedR = form.outcomeMode === 'TP' ? Math.abs(rMultipleNum) : -Math.abs(rMultipleNum);
-  const derivedReturnPct = Number((riskNum * signedR).toFixed(2));
-  const derivedPnl =
-    targetAccount && targetAccount.initialBalance > 0
-      ? Number((targetAccount.initialBalance * (derivedReturnPct / 100)).toFixed(2))
-      : null;
-
-  const currentGrade = calculateSetupGrade(form.checklistCompleted, form.followedPlan);
-
-  const toggleModel = (model: PDArray) => {
-    setForm((prev) => ({
-      ...prev,
-      pdArrays: prev.pdArrays.includes(model)
-        ? prev.pdArrays.filter((m) => m !== model)
-        : [...prev.pdArrays, model],
-    }));
-  };
-
-  const toggleChecklist = (item: string) => {
-    setForm((prev) => ({
-      ...prev,
-      checklistCompleted: prev.checklistCompleted.includes(item)
-        ? prev.checklistCompleted.filter((i) => i !== item)
-        : [...prev.checklistCompleted, item],
-    }));
-  };
 
   const handlePasteClipboardImage = (e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
@@ -269,11 +219,22 @@ function TradeFormModalContent({
     e.preventDefault();
     setFormError(null);
 
-    if (!targetAccount || targetAccount.initialBalance <= 0) {
-      setFormError(
-        'No se encontró una cuenta operativa válida con capital de referencia. Configura una cuenta predeterminada antes de registrar operaciones.'
-      );
-      return;
+    // Resolve target account transparently in the background
+    let resolvedAccountId = editingTrade?.accountId || defaultAccountId;
+    if (!resolvedAccountId || !accounts.some((a) => a.id === resolvedAccountId)) {
+      if (accounts.length > 0) {
+        resolvedAccountId = accounts[0].id;
+      } else {
+        const fallbackAcc = addAccount({
+          name: 'Cuenta Principal',
+          firm: 'Martin OS Trading',
+          initialBalance: 100000,
+          profitTarget: 8000,
+          maxDrawdown: 10000,
+          dailyLossLimit: 5000,
+        });
+        resolvedAccountId = fallbackAcc.id;
+      }
     }
 
     if (!form.direction) {
@@ -292,71 +253,75 @@ function TradeFormModalContent({
       return;
     }
 
-    if (conflictingDailyNote && !resolveNoTradeConfirmed) {
-      setFormError(
-        `El día ${entryDateKey} está marcado como «No Trade». Confirma desmarcar «No Trade» en el aviso antes de guardar.`
-      );
-      return;
+    // Validate optional realized return pct
+    let finalRealizedReturnPct: number | null = null;
+    if (form.realizedNetReturnPct.trim() !== '') {
+      const cleanPctStr = form.realizedNetReturnPct.trim().replace(',', '.');
+      const numPct = Number(cleanPctStr);
+      if (!Number.isFinite(numPct) || !/^\d+(?:[.,]\d{1,4})?$/.test(form.realizedNetReturnPct.trim())) {
+        setFormError('La rentabilidad neta % opcional debe ser un número válido positivo (ej: 1.5 o 2,25).');
+        return;
+      }
+      finalRealizedReturnPct = form.outcomeMode === 'SL' ? -Math.abs(numPct) : Math.abs(numPct);
     }
 
-    if (conflictingDailyNote && resolveNoTradeConfirmed) {
-      saveDailyNote({
-        ...conflictingDailyNote,
-        noTrade: false,
-      });
+    // Validate optional duration
+    let finalDurationMinutes: number | null = null;
+    if (form.durationMinutes.trim() !== '') {
+      const numDur = Number(form.durationMinutes.trim());
+      if (!Number.isFinite(numDur) || numDur < 0) {
+        setFormError('La duración debe ser un número entero mayor o igual a 0 minutos.');
+        return;
+      }
+      finalDurationMinutes = Math.round(numDur);
     }
 
-    // Determine timestamp without fabricating false precision:
-    // If editing a historical trade with exact recorded time, preserve its exact entryDate unless window was explicitly changed
+    // Determine timestamp without fabricating false precision
     let finalEntryDate: string;
     let finalTimePrecision: 'exact' | 'window';
 
-    if (editingTrade && editingTrade.timePrecision !== 'window' && form.selectedWindow === initialWindow) {
+    if (editingTrade && editingTrade.timePrecision !== 'window' && form.selectedWindow === initialWindow && form.dateKey === initialDateKey) {
       finalEntryDate = editingTrade.entryDate;
       finalTimePrecision = 'exact';
     } else {
       const repTime = form.selectedWindow === 'window_1' ? '09:30:00' : '10:35:00';
-      finalEntryDate = `${entryDateKey}T${repTime}`;
+      finalEntryDate = `${form.dateKey}T${repTime}`;
       finalTimePrecision = 'window';
     }
 
-    // Determine financial figures without overwriting historical audited P&L unless modified
-    let finalNetPnl: number;
-    let finalCalculationMode: 'monetary' | 'derived_r';
-    let finalCommission: number;
-    let finalCommissionUnmeasured: boolean;
+    // Check optional experimental prices
+    const parsedEntry = parseFloat(form.entryPrice) || 0;
+    const parsedExit = parseFloat(form.exitPrice) || 0;
+    const parsedSL = parseFloat(form.stopLoss) || 0;
+    const parsedTP = parseFloat(form.takeProfit) || 0;
+    const parsedSize = parseFloat(form.size) || 1;
 
-    if (isHistoricalMonetary && editingTrade) {
-      // Check if user changed risk or R-multiple
-      const riskChanged = editingTrade.riskPercentUsed !== riskNum;
-      const rChanged = Number(Math.abs(editingTrade.rMultiple).toFixed(2)) !== Number(rMultipleNum.toFixed(2));
-      const outcomeChanged = (editingTrade.status === 'Win' ? 'TP' : 'SL') !== form.outcomeMode;
+    const hasEnteredPrices = parsedEntry > 0 && parsedExit > 0;
 
-      if (!riskChanged && !rChanged && !outcomeChanged) {
-        // Preserve exact historical monetary figures
-        finalNetPnl = editingTrade.netPnl;
-        finalCalculationMode = 'monetary';
-        finalCommission = editingTrade.commission;
-        finalCommissionUnmeasured = Boolean(editingTrade.commissionUnmeasured);
-      } else {
-        // User explicitly updated risk / outcome / R-Multiple
-        finalNetPnl = derivedPnl ?? 0;
-        finalCalculationMode = 'derived_r';
-        finalCommission = 0;
-        finalCommissionUnmeasured = true;
-      }
+    let finalNetPnl = 0;
+    let finalCalculationMode: 'monetary' | 'derived_r' | 'unrecorded' = 'unrecorded';
+    let finalCommission = 0;
+    let finalCommissionUnmeasured = true;
+
+    if (hasEnteredPrices) {
+      finalCalculationMode = 'monetary';
+      const priceDiff = form.direction === 'Long' ? (parsedExit - parsedEntry) : (parsedEntry - parsedExit);
+      finalNetPnl = Number((priceDiff * parsedSize).toFixed(2));
+      finalCommission = 0;
+      finalCommissionUnmeasured = true;
+    } else if (editingTrade && editingTrade.calculationMode === 'monetary') {
+      // Preserve historical monetary figures if prices weren't re-entered
+      finalCalculationMode = 'monetary';
+      finalNetPnl = editingTrade.netPnl;
+      finalCommission = editingTrade.commission;
+      finalCommissionUnmeasured = Boolean(editingTrade.commissionUnmeasured);
     } else {
-      finalNetPnl = derivedPnl ?? 0;
-      finalCalculationMode = 'derived_r';
+      // V1b simplified trade without prices: unrecorded monetary figures
+      finalCalculationMode = 'unrecorded';
+      finalNetPnl = 0;
       finalCommission = 0;
       finalCommissionUnmeasured = true;
     }
-
-    const hasEnteredPrices =
-      parseFloat(form.entryPrice) > 0 ||
-      parseFloat(form.exitPrice) > 0 ||
-      parseFloat(form.stopLoss) > 0 ||
-      parseFloat(form.takeProfit) > 0;
 
     const payload: Omit<Trade, 'id'> = {
       symbol: form.symbol.toUpperCase(),
@@ -364,13 +329,13 @@ function TradeFormModalContent({
       entryDate: finalEntryDate,
       timePrecision: finalTimePrecision,
       operationalWindow: form.selectedWindow,
-      entryPrice: hasEnteredPrices ? parseFloat(form.entryPrice) || 0 : (editingTrade?.entryPrice || 0),
-      exitPrice: hasEnteredPrices ? parseFloat(form.exitPrice) || 0 : (editingTrade?.exitPrice || 0),
-      stopLoss: hasEnteredPrices ? parseFloat(form.stopLoss) || 0 : (editingTrade?.stopLoss || 0),
-      takeProfit: hasEnteredPrices ? parseFloat(form.takeProfit) || 0 : (editingTrade?.takeProfit || 0),
-      size: hasEnteredPrices ? parseFloat(form.size) || 1 : (editingTrade?.size || 1),
+      entryPrice: hasEnteredPrices ? parsedEntry : (editingTrade?.entryPrice || 0),
+      exitPrice: hasEnteredPrices ? parsedExit : (editingTrade?.exitPrice || 0),
+      stopLoss: parsedSL > 0 ? parsedSL : (editingTrade?.stopLoss || 0),
+      takeProfit: parsedTP > 0 ? parsedTP : (editingTrade?.takeProfit || 0),
+      size: parsedSize > 0 ? parsedSize : (editingTrade?.size || 1),
       pricesUnrecorded: !hasEnteredPrices && !(editingTrade && editingTrade.entryPrice > 0),
-      riskPercentUsed: riskNum,
+      riskPercentUsed: editingTrade?.riskPercentUsed || 1.0,
       htfAligned: editingTrade?.htfAligned || ['1D', '4H', '2H', '30m'],
       grossPnl: finalNetPnl + finalCommission,
       commission: finalCommission,
@@ -378,24 +343,26 @@ function TradeFormModalContent({
       netPnl: finalNetPnl,
       plannedRR: isUnchangedHistoricalZero && editingTrade ? editingTrade.plannedRR : Number(Math.abs(rMultipleNum).toFixed(2)),
       rMultiple: isUnchangedHistoricalZero && editingTrade ? editingTrade.rMultiple : Number(signedR.toFixed(2)),
+      realizedNetReturnPct: finalRealizedReturnPct,
+      durationMinutes: finalDurationMinutes,
       status: form.outcomeMode === 'TP' ? 'Win' : 'Loss',
       killzone:
         form.selectedWindow === 'window_1'
           ? 'NY Open 09:30 AM (09:30-10:30)'
           : 'NY Mid-Morning (10:30-12:00)',
-      playbookId: form.playbookId || undefined,
-      pdArrays: form.pdArrays,
-      checklistCompleted: form.checklistCompleted,
-      setupGrade: currentGrade,
-      dailyBias: form.dailyBias,
-      dolTarget: form.dolTarget,
+      playbookId: editingTrade?.playbookId || undefined,
+      pdArrays: [form.selectedModel],
+      checklistCompleted: editingTrade?.checklistCompleted || [],
+      setupGrade: editingTrade?.setupGrade || 'Sin evaluar',
+      dailyBias: editingTrade?.dailyBias || 'Neutral',
+      dolTarget: editingTrade?.dolTarget || '',
       timeframe: editingTrade?.timeframe || '5m',
-      followedPlan: form.followedPlan,
+      followedPlan: editingTrade?.followedPlan ?? true,
       psychologyTag: form.psychologyTag,
       tradingViewUrl: form.tradingViewUrl || undefined,
       screenshotDataUrl: form.screenshotDataUrl || undefined,
       notes: form.notes,
-      accountId: targetAccount.id,
+      accountId: resolvedAccountId,
       calculationMode: finalCalculationMode,
     };
 
@@ -412,7 +379,7 @@ function TradeFormModalContent({
       onPaste={handlePasteClipboardImage}
       className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4"
     >
-      <div className="bg-[#111114] text-zinc-100 rounded-2xl max-w-3xl w-full p-4 sm:p-6 shadow-2xl border border-white/[0.1] max-h-[92vh] overflow-y-auto">
+      <div className="bg-[#111114] text-zinc-100 rounded-2xl max-w-2xl w-full p-4 sm:p-6 shadow-2xl border border-white/[0.1] max-h-[92vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between pb-3.5 border-b border-white/[0.08]">
           <div className="flex flex-wrap items-center gap-2.5">
@@ -420,25 +387,7 @@ function TradeFormModalContent({
               {editingTrade ? 'Editar Operación' : 'Registrar Operación'}
             </h3>
             <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-zinc-900 border border-white/10 text-zinc-300">
-              Fecha: {entryDateKey}
-            </span>
-            {targetAccount && (
-              <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${theme.badgeClass}`}>
-                {targetAccount.name}
-              </span>
-            )}
-            <span
-              className={`px-2.5 py-0.5 rounded-full text-xs font-extrabold ${
-                currentGrade === 'Sin evaluar'
-                  ? 'bg-zinc-500/10 text-zinc-400'
-                  : currentGrade === 'A+'
-                  ? 'bg-emerald-500/10 text-emerald-400'
-                  : currentGrade === 'B'
-                  ? 'bg-amber-500/10 text-amber-300'
-                  : 'bg-rose-500/10 text-rose-400'
-              }`}
-            >
-              Alineación: {currentGrade}
+              {form.dateKey}
             </span>
           </div>
 
@@ -461,397 +410,301 @@ function TradeFormModalContent({
             </div>
           )}
 
-          {/* Account Resolution Alerts & Setup */}
-          {accountResolution.status === 'multiple_without_default' && (
-            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 space-y-2 text-xs">
-              <strong className="block text-amber-200">
-                Selecciona tu Cuenta Operativa Predeterminada
-              </strong>
-              <p className="text-amber-200/90 text-[11px]">
-                Tienes varias cuentas operativas registradas. Para evitar asignaciones arbitrarias, confirma cuál utilizarás como predeterminada:
-              </p>
-              <div className="flex flex-wrap gap-2 pt-1">
+          {/* 1. Datos Principales */}
+          <div className="space-y-3 bg-[#09090B] p-4 rounded-xl border border-white/[0.08]">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-400">
+              Datos Principales
+            </h4>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-zinc-300 mb-1">
+                  Fecha de operación
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={form.dateKey}
+                  onChange={(e) => setForm({ ...form, dateKey: e.target.value })}
+                  className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 text-zinc-100 font-bold focus:outline-none focus:ring-2 ${theme.ringClass}`}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-zinc-300 mb-1">
+                  Activo
+                </label>
                 <select
-                  value={pendingDefaultAccount}
-                  onChange={(e) => setPendingDefaultAccount(e.target.value)}
-                  className="px-3 py-1.5 text-xs rounded-xl bg-zinc-900 border border-white/20 text-zinc-100"
+                  value={form.symbol}
+                  onChange={(e) => setForm({ ...form, symbol: e.target.value })}
+                  className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 text-zinc-100 font-bold focus:outline-none focus:ring-2 ${theme.ringClass}`}
                 >
-                  <option value="">-- Elige una cuenta --</option>
-                  {accounts.map((acc) => (
-                    <option key={acc.id} value={acc.id}>
-                      {acc.name} (${acc.initialBalance.toLocaleString('en-US')})
+                  {Object.keys(INSTRUMENT_SPECS).map((sym) => (
+                    <option key={sym} value={sym}>
+                      {sym} — {INSTRUMENT_SPECS[sym].label.split(' (')[0]}
                     </option>
                   ))}
                 </select>
-                <button
-                  type="button"
-                  disabled={!pendingDefaultAccount}
-                  onClick={() => {
-                    if (pendingDefaultAccount) {
-                      setDefaultAccountId(pendingDefaultAccount);
-                      setFormError(null);
-                    }
-                  }}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold ${theme.buttonClass} disabled:opacity-40 cursor-pointer`}
-                >
-                  Establecer como Predeterminada
-                </button>
               </div>
-            </div>
-          )}
 
-          {accountResolution.status === 'no_account' && (
-            <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 space-y-3 text-xs">
               <div>
-                <strong className="block text-amber-100 text-sm font-bold">
-                  Configura tu Cuenta Operativa
-                </strong>
-                <p className="text-amber-200/90 text-xs mt-0.5">
-                  No tienes ninguna cuenta registrada. Define tu capital base para calcular retornos y gestionar el riesgo sin salir del formulario.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
-                <div>
-                  <label className="block text-[11px] font-semibold text-amber-200/90 mb-1">
-                    Nombre de la Cuenta
-                  </label>
-                  <input
-                    type="text"
-                    value={newAccName}
-                    onChange={(e) => setNewAccName(e.target.value)}
-                    placeholder="Ej: Cuenta Principal"
-                    className="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-white/20 text-zinc-100 text-xs focus:outline-none focus:border-amber-400"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-amber-200/90 mb-1">
-                    Empresa / Broker
-                  </label>
-                  <input
-                    type="text"
-                    value={newAccFirm}
-                    onChange={(e) => setNewAccFirm(e.target.value)}
-                    placeholder="Ej: Funding Pips"
-                    className="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-white/20 text-zinc-100 text-xs focus:outline-none focus:border-amber-400"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-amber-200/90 mb-1">
-                    Capital Inicial (USD)
-                  </label>
-                  <input
-                    type="number"
-                    min="1000"
-                    step="1000"
-                    value={newAccBalance}
-                    onChange={(e) => setNewAccBalance(e.target.value)}
-                    placeholder="100000"
-                    className="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-white/20 text-zinc-100 text-xs font-mono focus:outline-none focus:border-amber-400"
-                  />
-                </div>
-              </div>
-
-              <div className="pt-1 flex flex-wrap items-center justify-between gap-2">
-                <span className="text-[11px] text-zinc-400">
-                  Parámetros calculados: DD Máx 10%, Límite Diario 5%, Target 8%.
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const balance = parseFloat(newAccBalance) || 100000;
-                    const created = addAccount({
-                      name: newAccName.trim() || 'Cuenta Principal',
-                      firm: newAccFirm.trim() || 'Funding Pips',
-                      initialBalance: balance,
-                      profitTarget: balance * 0.08,
-                      maxDrawdown: balance * 0.10,
-                      dailyLossLimit: balance * 0.05,
-                    });
-                    setDefaultAccountId(created.id);
-                    setFormError(null);
-                  }}
-                  className={`px-4 py-2 rounded-xl text-xs font-bold ${theme.buttonClass} cursor-pointer shadow-lg`}
-                >
-                  Crear Cuenta y Continuar
-                </button>
-              </div>
-            </div>
-          )}
-
-          {conflictingDailyNote && (
-            <div
-              role="alert"
-              className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs text-amber-200 space-y-2"
-            >
-              <div className="flex items-start gap-2">
-                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                <div>
-                  <strong className="block text-amber-100">
-                    Advertencia: El día {entryDateKey} está marcado como «No Trade»
-                  </strong>
-                  <p className="text-amber-200/90 mt-0.5">
-                    {conflictingDailyNote.noTradeReason
-                      ? `Motivo registrado: "${conflictingDailyNote.noTradeReason}". `
-                      : ''}
-                    Tus notas pre-mercado y plan diario se conservarán intactos, pero debes confirmar levantar «No Trade» para guardar.
-                  </p>
-                </div>
-              </div>
-              <label className="flex items-center gap-2 font-semibold text-amber-100 cursor-pointer pt-1">
-                <input
-                  type="checkbox"
-                  checked={resolveNoTradeConfirmed}
-                  onChange={(e) => {
-                    setResolveNoTradeConfirmed(e.target.checked);
-                    if (e.target.checked) setFormError(null);
-                  }}
-                  className="accent-amber-400"
-                />
-                Confirmo levantar el estado «No Trade» en {entryDateKey} al guardar.
-              </label>
-            </div>
-          )}
-
-          {/* 1. Risk and Outcome Strip */}
-          <div className="p-3.5 rounded-xl bg-zinc-900 border border-white/[0.08] flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-zinc-300">Riesgo:</span>
-              {(['1.0', '1.5', '2.0'] as const).map((pct) => (
-                <button
-                  type="button"
-                  key={pct}
-                  onClick={() => setForm((prev) => ({ ...prev, riskPercentUsed: pct }))}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-                    form.riskPercentUsed === pct
-                      ? theme.buttonClass
-                      : 'bg-white/[0.06] text-zinc-300 hover:bg-white/10'
-                  }`}
-                >
-                  {pct}% Riesgo
-                </button>
-              ))}
-            </div>
-
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-zinc-300">Resultado:</span>
-              <button
-                type="button"
-                onClick={() => setForm((prev) => ({ ...prev, outcomeMode: 'TP' }))}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                  form.outcomeMode === 'TP'
-                    ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
-                    : 'bg-white/[0.06] text-zinc-400 hover:bg-white/10'
-                }`}
-              >
-                TP Hit
-              </button>
-              <button
-                type="button"
-                onClick={() => setForm((prev) => ({ ...prev, outcomeMode: 'SL' }))}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                  form.outcomeMode === 'SL'
-                    ? 'bg-rose-500 text-white shadow-md shadow-rose-500/20'
-                    : 'bg-white/[0.06] text-zinc-400 hover:bg-white/10'
-                }`}
-              >
-                SL Hit
-              </button>
-            </div>
-          </div>
-
-          {/* 2. Primary Capture Row */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 bg-[#09090B] p-3.5 rounded-xl border border-white/[0.08]">
-            <div>
-              <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                Activo
-              </label>
-              <select
-                value={form.symbol}
-                onChange={(e) => setForm({ ...form, symbol: e.target.value })}
-                className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 text-zinc-100 font-bold focus:outline-none focus:ring-2 ${theme.ringClass}`}
-              >
-                {Object.keys(INSTRUMENT_SPECS).map((sym) => (
-                  <option key={sym} value={sym}>
-                    {sym} — {INSTRUMENT_SPECS[sym].label.split(' (')[0]}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                Dirección
-              </label>
-              <select
-                required
-                value={form.direction}
-                onChange={(e) =>
-                  setForm({ ...form, direction: e.target.value as TradeDirection })
-                }
-                className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 text-zinc-100 font-semibold focus:outline-none focus:ring-2 ${theme.ringClass}`}
-              >
-                <option value="" disabled>Selecciona dirección</option>
-                <option value="Long">Long (Compra)</option>
-                <option value="Short">Short (Venta)</option>
-              </select>
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="block text-xs font-semibold text-zinc-300">
-                  R-Multiple Obtenido
+                <label className="block text-xs font-semibold text-zinc-300 mb-1">
+                  Dirección
                 </label>
-                <span
-                  className={`text-[11px] font-bold font-mono ${
-                    derivedReturnPct >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                  }`}
-                >
-                  {derivedReturnPct >= 0 ? `+${derivedReturnPct.toFixed(2)}%` : `${derivedReturnPct.toFixed(2)}%`}
-                </span>
-              </div>
-              <input
-                type="text"
-                inputMode="decimal"
-                required
-                value={form.rMultiple}
-                onChange={(e) => {
-                  const sanitized = e.target.value.trim().replace(/\s+/g, '');
-                  if (/^\d*(?:[.,]\d{0,2})?$/.test(sanitized)) {
-                    setForm((prev) => ({ ...prev, rMultiple: sanitized }));
+                <select
+                  required
+                  value={form.direction}
+                  onChange={(e) =>
+                    setForm({ ...form, direction: e.target.value as TradeDirection })
                   }
-                }}
-                placeholder="Ej: 1,25 o 2.50"
-                className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 text-zinc-100 font-bold font-mono focus:outline-none focus:ring-2 ${theme.ringClass}`}
-              />
-              <span className="text-[10px] text-zinc-500 block mt-0.5">
-                {derivedPnl !== null
-                  ? `~${derivedPnl >= 0 ? `+$${derivedPnl.toFixed(2)}` : `-$${Math.abs(derivedPnl).toFixed(2)}`} USD derivado`
-                  : 'Calculado sobre capital'}
-              </span>
-            </div>
+                  className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 text-zinc-100 font-semibold focus:outline-none focus:ring-2 ${theme.ringClass}`}
+                >
+                  <option value="" disabled>Selecciona dirección</option>
+                  <option value="Long">Long (Compra)</option>
+                  <option value="Short">Short (Venta)</option>
+                </select>
+              </div>
 
-            <div>
-              <label className={`block text-xs font-semibold ${theme.accentTextClass} mb-1`}>
-                Ventana Horaria NY
-              </label>
-              <select
-                value={form.selectedWindow}
-                onChange={(e) =>
-                  setForm({ ...form, selectedWindow: e.target.value as 'window_1' | 'window_2' })
-                }
-                className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 font-bold text-zinc-100 focus:outline-none focus:ring-2 ${theme.ringClass}`}
-              >
-                <option value="window_1">NY Open 09:30–10:35</option>
-                <option value="window_2">NY Open 10:35–11:00</option>
-              </select>
-              <span className="text-[10px] text-zinc-500 block mt-0.5">
-                Ventana declarada para analítica
-              </span>
-            </div>
-          </div>
-
-          {/* 3. Entry Models (Modelos de entrada) & Context */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-[#09090B] p-4 rounded-xl border border-white/[0.08]">
-            <div>
-              <label className={`text-xs font-bold ${theme.accentTextClass} mb-2 flex items-center gap-1.5`}>
-                <CheckSquare className="w-4 h-4" />
-                Checklist de Contexto Multi-Timeframe
-              </label>
-              <div className="space-y-1.5">
-                {ICT_CHECKLIST_ITEMS.map((item) => {
-                  const checked = form.checklistCompleted.includes(item);
-                  return (
-                    <label
-                      key={item}
-                      className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleChecklist(item)}
-                        className={`rounded ${theme.accentTextClass}`}
-                      />
-                      {item}
-                    </label>
-                  );
-                })}
+              <div>
+                <label className={`block text-xs font-semibold ${theme.accentTextClass} mb-1`}>
+                  Ventana Horaria NY
+                </label>
+                <select
+                  value={form.selectedWindow}
+                  onChange={(e) =>
+                    setForm({ ...form, selectedWindow: e.target.value as 'window_1' | 'window_2' })
+                  }
+                  className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 font-bold text-zinc-100 focus:outline-none focus:ring-2 ${theme.ringClass}`}
+                >
+                  <option value="window_1">09:30–10:35 NY</option>
+                  <option value="window_2">10:35–11:00 NY</option>
+                </select>
               </div>
             </div>
 
-            <div className="space-y-3">
+            {/* Modelo de entrada y Resultado */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
               <div>
                 <label className="block text-xs font-semibold text-zinc-300 mb-1.5">
-                  Modelos de entrada
+                  Modelo de Entrada (Único)
                 </label>
                 <div className="flex flex-wrap gap-2">
-                  {[
-                    { key: 'BPR (Balanced Price Range)' as PDArray, label: 'BPR' },
-                    { key: 'Breaker Block' as PDArray, label: 'Breaker Block' },
-                    { key: 'Key Level' as PDArray, label: 'Key Level' },
-                  ].map(({ key, label }) => {
-                    const active = form.pdArrays.includes(key);
+                  {availableModels.map((model) => {
+                    const isSelected = form.selectedModel === model;
                     return (
                       <button
                         type="button"
-                        key={key}
-                        onClick={() => toggleModel(key)}
+                        key={model}
+                        onClick={() => setForm((prev) => ({ ...prev, selectedModel: model }))}
                         className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                          active
+                          isSelected
                             ? theme.buttonClass
                             : 'bg-zinc-900 border border-white/10 text-zinc-300 hover:bg-zinc-800'
                         }`}
                       >
-                        {label}
+                        {model.split(' (')[0]}
                       </button>
                     );
                   })}
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                    Target Liquidez (DOL)
-                  </label>
-                  <input
-                    type="text"
-                    value={form.dolTarget}
-                    onChange={(e) => setForm({ ...form, dolTarget: e.target.value })}
-                    placeholder="High/Low Diario, 4H, 30m..."
-                    className={`w-full px-2.5 py-1.5 text-xs bg-[#111114] text-zinc-100 rounded-lg border border-white/10 focus:outline-none focus:ring-2 ${theme.ringClass}`}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                    Ejecución / Disciplina
-                  </label>
-                  <select
-                    value={form.psychologyTag}
-                    onChange={(e) =>
-                      setForm({ ...form, psychologyTag: e.target.value as PsychologyTag })
-                    }
-                    className={`w-full px-2.5 py-1.5 text-xs bg-[#09090B] text-zinc-100 rounded-lg border border-white/10 focus:outline-none focus:ring-2 ${theme.ringClass}`}
+              <div>
+                <label className="block text-xs font-semibold text-zinc-300 mb-1.5">
+                  Resultado
+                </label>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setForm((prev) => ({ ...prev, outcomeMode: 'TP' }))}
+                    className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                      form.outcomeMode === 'TP'
+                        ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+                        : 'bg-white/[0.06] text-zinc-400 hover:bg-white/10'
+                    }`}
                   >
-                    {PSYCHOLOGY_TAGS.map((tag) => (
-                      <option key={tag} value={tag}>
-                        {tag}
-                      </option>
-                    ))}
-                  </select>
+                    TP Hit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setForm((prev) => ({ ...prev, outcomeMode: 'SL' }))}
+                    className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                      form.outcomeMode === 'SL'
+                        ? 'bg-rose-500 text-white shadow-md shadow-rose-500/20'
+                        : 'bg-white/[0.06] text-zinc-400 hover:bg-white/10'
+                    }`}
+                  >
+                    SL Hit
+                  </button>
                 </div>
+              </div>
+            </div>
+
+            {/* R-Multiple */}
+            <div className="pt-1">
+              <label className="block text-xs font-semibold text-zinc-300 mb-1">
+                R-Multiple Obtenido
+              </label>
+              <div className="max-w-xs">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  required
+                  value={form.rMultiple}
+                  onChange={(e) => {
+                    const sanitized = e.target.value.trim().replace(/\s+/g, '');
+                    if (/^\d*(?:[.,]\d{0,2})?$/.test(sanitized)) {
+                      setForm((prev) => ({ ...prev, rMultiple: sanitized }));
+                    }
+                  }}
+                  placeholder="Ej: 1,25 o 2.50"
+                  className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 text-zinc-100 font-bold font-mono focus:outline-none focus:ring-2 ${theme.ringClass}`}
+                />
+                <span className="text-[10px] text-zinc-500 block mt-0.5">
+                  Métrica independiente en R (sin asumir 1% de riesgo).
+                </span>
               </div>
             </div>
           </div>
 
-          {/* 4. Optional Execution Prices (Collapsible) */}
+          {/* 2. Resultado Económico y Duración */}
+          <div className="space-y-3 bg-[#09090B] p-4 rounded-xl border border-white/[0.08]">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-400">
+              Resultado Económico & Duración (Opcionales)
+            </h4>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-zinc-300 mb-1">
+                  Rentabilidad neta % (Opcional)
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={form.realizedNetReturnPct}
+                  onChange={(e) => {
+                    const sanitized = e.target.value.trim().replace(/\s+/g, '');
+                    if (/^\d*(?:[.,]\d{0,4})?$/.test(sanitized)) {
+                      setForm((prev) => ({ ...prev, realizedNetReturnPct: sanitized }));
+                    }
+                  }}
+                  placeholder="Ej: 1.50 (dejar vacío si es desconocido)"
+                  className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 text-zinc-100 font-mono focus:outline-none focus:ring-2 ${theme.ringClass}`}
+                />
+                <span className="text-[10px] text-zinc-500 block mt-0.5">
+                  Si se omite, se preservará como &quot;Sin dato&quot; sin inventar 0%.
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-zinc-300 mb-1">
+                  Duración del Trade en minutos (Opcional)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={form.durationMinutes}
+                  onChange={(e) => setForm({ ...form, durationMinutes: e.target.value })}
+                  placeholder="Ej: 15 (minutos)"
+                  className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 text-zinc-100 font-mono focus:outline-none focus:ring-2 ${theme.ringClass}`}
+                />
+                <span className="text-[10px] text-zinc-500 block mt-0.5">
+                  Duración manual del trade. Si se deja vacía, se almacena desconocida.
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* 3. Otros Datos (Emocional, Gráfico, Notas) */}
+          <div className="space-y-3 bg-[#09090B] p-4 rounded-xl border border-white/[0.08]">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-400">
+              Psicología, Captura & Notas
+            </h4>
+
+            <div>
+              <label className="block text-xs font-semibold text-zinc-300 mb-1">
+                Estado Emocional / Disciplina
+              </label>
+              <select
+                value={form.psychologyTag}
+                onChange={(e) =>
+                  setForm({ ...form, psychologyTag: e.target.value as PsychologyTag })
+                }
+                className={`w-full px-3 py-2 text-xs bg-zinc-900 text-zinc-100 rounded-xl border border-white/10 focus:outline-none focus:ring-2 ${theme.ringClass}`}
+              >
+                {PSYCHOLOGY_TAGS.map((tag) => (
+                  <option key={tag} value={tag}>
+                    {tag}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <label className="block text-xs font-semibold text-zinc-300">
+                  Captura de TradingView
+                </label>
+                <input
+                  type="url"
+                  value={form.tradingViewUrl}
+                  onChange={(e) => setForm({ ...form, tradingViewUrl: e.target.value })}
+                  placeholder="https://www.tradingview.com/x/..."
+                  className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 text-zinc-100 focus:outline-none focus:ring-2 ${theme.ringClass}`}
+                />
+                <div className="flex items-center gap-2">
+                  <label className="px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-xs font-semibold text-zinc-200 flex items-center gap-1.5 cursor-pointer">
+                    <ImageIcon className={`w-3.5 h-3.5 ${theme.accentTextClass}`} />
+                    Subir Imagen
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleImageFileUpload}
+                      className="hidden"
+                    />
+                  </label>
+                  <span className="text-[11px] text-zinc-400 flex items-center gap-1">
+                    <ClipboardPaste className="w-3.5 h-3.5" /> O presiona Ctrl+V
+                  </span>
+                </div>
+                {form.screenshotDataUrl && (
+                  <div className="flex items-center justify-between bg-emerald-500/10 px-3 py-1.5 rounded-lg text-xs text-emerald-300 font-semibold border border-emerald-500/20">
+                    <span>Captura lista para guardar</span>
+                    <button
+                      type="button"
+                      onClick={() => setForm({ ...form, screenshotDataUrl: '' })}
+                      className="text-rose-400 underline cursor-pointer text-xs"
+                    >
+                      Quitar
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-zinc-300 mb-1">
+                  Notas Libres
+                </label>
+                <textarea
+                  rows={3}
+                  value={form.notes}
+                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                  placeholder="Comentarios sobre el trade, confirmación o gestión..."
+                  className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 text-zinc-100 focus:outline-none focus:ring-2 ${theme.ringClass}`}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* 4. Precios de Ejecución Opcionales (Experimental y Plegable) */}
           <div className="rounded-xl border border-white/[0.06] bg-zinc-950/60 overflow-hidden">
             <button
               type="button"
               onClick={() => setShowOptionalPrices((prev) => !prev)}
-              className="w-full px-3.5 py-2 text-xs font-medium text-zinc-400 hover:text-zinc-200 flex items-center justify-between cursor-pointer"
+              className="w-full px-3.5 py-2.5 text-xs font-medium text-zinc-400 hover:text-zinc-200 flex items-center justify-between cursor-pointer"
             >
-              <span>Precios de Ejecución (Opcional — no afectan el cálculo financiero)</span>
+              <span>Precios de Ejecución (Opcional — experimental)</span>
               {showOptionalPrices ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
             </button>
 
@@ -916,90 +769,21 @@ function TradeFormModalContent({
             )}
           </div>
 
-          {/* 5. Chart Capture and Notes */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="space-y-2">
-              <label className="block text-xs font-semibold text-zinc-300">
-                Captura de TradingView
-              </label>
-              <input
-                type="url"
-                value={form.tradingViewUrl}
-                onChange={(e) => setForm({ ...form, tradingViewUrl: e.target.value })}
-                placeholder="https://www.tradingview.com/x/..."
-                className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-[#09090B] text-zinc-100 focus:outline-none focus:ring-2 ${theme.ringClass}`}
-              />
-              <div className="flex items-center gap-2">
-                <label className="px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-xs font-semibold text-zinc-200 flex items-center gap-1.5 cursor-pointer">
-                  <ImageIcon className={`w-3.5 h-3.5 ${theme.accentTextClass}`} />
-                  Subir Imagen
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleImageFileUpload}
-                    className="hidden"
-                  />
-                </label>
-                <span className="text-[11px] text-zinc-400 flex items-center gap-1">
-                  <ClipboardPaste className="w-3.5 h-3.5" /> O presiona Ctrl+V
-                </span>
-              </div>
-              {form.screenshotDataUrl && (
-                <div className="flex items-center justify-between bg-emerald-500/10 px-3 py-1.5 rounded-lg text-xs text-emerald-300 font-semibold border border-emerald-500/20">
-                  <span>Captura lista para guardar</span>
-                  <button
-                    type="button"
-                    onClick={() => setForm({ ...form, screenshotDataUrl: '' })}
-                    className="text-rose-400 underline cursor-pointer text-xs"
-                  >
-                    Quitar
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                Bitácora de Sesión
-              </label>
-              <textarea
-                rows={3}
-                value={form.notes}
-                onChange={(e) => setForm({ ...form, notes: e.target.value })}
-                placeholder="Notas de contexto, confirmación en 15m/5m y gestión de la operación..."
-                className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-[#09090B] text-zinc-100 focus:outline-none focus:ring-2 ${theme.ringClass}`}
-              />
-            </div>
-          </div>
-
-          {/* 6. Footer Actions */}
-          <div className="flex items-center justify-between pt-3 border-t border-white/[0.08]">
-            <label className="flex items-center gap-2 text-xs font-semibold text-zinc-300 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={form.followedPlan}
-                onChange={(e) => setForm({ ...form, followedPlan: e.target.checked })}
-                className={`rounded ${theme.accentTextClass}`}
-              />
-              Respeté el plan y acepté TP o SL sin dudar
-            </label>
-
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-300 hover:bg-white/[0.06] cursor-pointer"
-              >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                disabled={!targetAccount}
-                className={`px-5 py-2 rounded-xl text-xs font-semibold shadow-md cursor-pointer ${theme.buttonClass} disabled:opacity-40 disabled:cursor-not-allowed`}
-              >
-                {editingTrade ? 'Guardar Cambios' : 'Registrar Operación'}
-              </button>
-            </div>
+          {/* 5. Footer Actions */}
+          <div className="flex items-center justify-end gap-2 pt-3 border-t border-white/[0.08]">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-300 hover:bg-white/[0.06] cursor-pointer"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              className={`px-5 py-2 rounded-xl text-xs font-semibold shadow-md cursor-pointer ${theme.buttonClass}`}
+            >
+              {editingTrade ? 'Guardar Cambios' : 'Registrar Operación'}
+            </button>
           </div>
         </form>
       </div>

@@ -239,8 +239,8 @@ export function DashboardView() {
             <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
               Avg R-Multiple
             </span>
-            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
-              Plan: {metrics.planComplianceRate}%
+            <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${theme.badgeClass}`}>
+              R-Multiple
             </span>
           </div>
           <div className="text-2xl font-extrabold tracking-tight text-zinc-100 tabular-nums">
@@ -254,24 +254,23 @@ export function DashboardView() {
           </div>
         </div>
 
-        {/* Tarjeta 5: Martin Edge Score */}
-        <div className="bg-gradient-to-br from-zinc-900 via-[#141418] to-zinc-950 text-white rounded-2xl p-5 border border-white/15 shadow-xl">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
-              Martin Edge Score
+        {/* Tarjeta 5: Racha Actual */}
+        <div className="bg-[#111114] rounded-2xl p-5 border border-white/[0.08] hover:border-white/[0.15] transition-colors">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
+              Racha Actual
             </span>
             <Award className={`w-4 h-4 ${theme.accentTextClass}`} />
           </div>
-          <div className={`text-3xl font-extrabold tracking-tight tabular-nums ${theme.accentTextClass}`}>
-            {metrics.zellaScore}
-            <span className="text-sm font-normal text-zinc-500">/100</span>
+          <div className="text-2xl font-extrabold tracking-tight text-zinc-100 tabular-nums">
+            {metrics.currentStreak.count > 0
+              ? `${metrics.currentStreak.count} ${metrics.currentStreak.type === 'Win' ? 'TP' : 'SL'}`
+              : '0'}
           </div>
-          <p className="text-[11px] text-zinc-400 mt-2">
-            Racha actual:{' '}
-            <strong className="text-zinc-100">
-              {metrics.currentStreak.count} {metrics.currentStreak.type}
-            </strong>
-          </p>
+          <div className="mt-2.5 flex items-center justify-between text-xs text-zinc-400 tabular-nums">
+            <span>Victorias: {metrics.winsCount}</span>
+            <span>Derrotas: {metrics.lossesCount}</span>
+          </div>
         </div>
       </div>
 

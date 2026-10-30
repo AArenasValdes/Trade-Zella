@@ -19,7 +19,7 @@ export type PDArray =
   | 'Key Level';
 
 export type TimePrecision = 'exact' | 'window';
-export type CalculationMode = 'monetary' | 'derived_r';
+export type CalculationMode = 'monetary' | 'derived_r' | 'unrecorded';
 
 export type PsychologyTag =
   | 'A+ Alineado al Contexto HTF'
@@ -120,6 +120,8 @@ export interface Trade {
   calculationMode?: CalculationMode;
   commissionUnmeasured?: boolean;
   pricesUnrecorded?: boolean;
+  realizedNetReturnPct?: number | null;
+  durationMinutes?: number | null;
 }
 
 export interface TradeFilters {

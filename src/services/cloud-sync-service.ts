@@ -80,6 +80,8 @@ interface TradeRow {
   calculation_mode?: string | null;
   commission_unmeasured?: boolean | null;
   prices_unrecorded?: boolean | null;
+  realized_net_return_pct?: number | null;
+  duration_minutes?: number | null;
 }
 
 interface NoteRow {
@@ -174,9 +176,15 @@ function mapTrade(row: TradeRow, signedScreenshotUrl?: string): Trade {
     operationalWindow: (row.operational_window === 'window_1' || row.operational_window === 'window_2' || row.operational_window === 'outside')
       ? row.operational_window
       : undefined,
-    calculationMode: row.calculation_mode === 'derived_r' ? 'derived_r' : 'monetary',
+    calculationMode: (row.calculation_mode === 'unrecorded'
+      ? 'unrecorded'
+      : row.calculation_mode === 'derived_r'
+      ? 'derived_r'
+      : 'monetary'),
     commissionUnmeasured: Boolean(row.commission_unmeasured),
     pricesUnrecorded: Boolean(row.prices_unrecorded),
+    realizedNetReturnPct: row.realized_net_return_pct != null ? Number(row.realized_net_return_pct) : null,
+    durationMinutes: row.duration_minutes != null ? Number(row.duration_minutes) : null,
   };
 }
 
@@ -277,9 +285,11 @@ function tradeToRow(trade: Trade, screenshotPath: string | null) {
     notes: trade.notes ?? null,
     time_precision: trade.timePrecision ?? 'exact',
     operational_window: trade.operationalWindow ?? null,
-    calculation_mode: trade.calculationMode ?? 'monetary',
+    calculation_mode: trade.calculationMode ?? (trade.pricesUnrecorded ? 'unrecorded' : 'monetary'),
     commission_unmeasured: trade.commissionUnmeasured ?? false,
     prices_unrecorded: trade.pricesUnrecorded ?? false,
+    realized_net_return_pct: trade.realizedNetReturnPct ?? null,
+    duration_minutes: trade.durationMinutes ?? null,
   };
 }
 

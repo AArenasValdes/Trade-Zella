@@ -84,6 +84,29 @@ export function calculateTradeReturnPct(
 }
 
 /**
+ * Resolves the percentage return of a trade according to the V1b contract:
+ * 1. If realizedNetReturnPct is explicitly defined (user entered), returns it directly.
+ * 2. If calculationMode === 'unrecorded' and no realizedNetReturnPct was entered, returns null ('Sin dato').
+ * 3. For monetary or legacy derived trades, calculates (netPnl / initialBalance) * 100 if capital exists.
+ */
+export function resolveTradeReturnPct(
+  trade: Pick<Trade, 'netPnl' | 'calculationMode' | 'realizedNetReturnPct'>,
+  initialBalance?: number | null
+): number | null {
+  if (
+    trade.realizedNetReturnPct !== undefined &&
+    trade.realizedNetReturnPct !== null &&
+    Number.isFinite(trade.realizedNetReturnPct)
+  ) {
+    return trade.realizedNetReturnPct;
+  }
+  if (trade.calculationMode === 'unrecorded') {
+    return null;
+  }
+  return calculateTradeReturnPct(trade.netPnl, initialBalance);
+}
+
+/**
  * Resolves the relevant accounts and calculates consolidated return.
  * - Single account scope: sum(netPnl) / account.initialBalance * 100
  * - Multi-account scope ("All"): sum(netPnl) / sum(initialBalances) * 100
@@ -361,7 +384,7 @@ export function calculatePercentageEquityCurve(
 
     const tradeAcc = accountMap.get(t.accountId);
     const tradeInitialBalance = tradeAcc?.initialBalance ?? referenceCapital;
-    const tradeReturnPct = calculateTradeReturnPct(t.netPnl, tradeInitialBalance);
+    const tradeReturnPct = resolveTradeReturnPct(t, tradeInitialBalance);
 
     if (tradeReturnPct !== null) {
       if (bestTradeReturnPct === null || tradeReturnPct > bestTradeReturnPct) {
@@ -506,7 +529,7 @@ export function formatReturnPct(
     fallback?: string;
   }
 ): string {
-  const { showSign = true, digits = 2, fallback = 'Sin capital de ref.' } = options || {};
+  const { showSign = true, digits = 2, fallback = 'Sin dato' } = options || {};
 
   if (value === null || value === undefined || !Number.isFinite(value)) {
     return fallback;

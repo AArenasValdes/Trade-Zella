@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import { Trade } from '@/types/trading';
 import { useTrading } from '@/context/TradingContext';
 import { resolveTradeImage } from '@/services/storage-service';
-import { calculateTradeReturnPct, formatReturnPct } from '@/services/financial-engine';
+import { resolveTradeReturnPct, formatReturnPct } from '@/services/financial-engine';
 import {
   X,
   ExternalLink,
@@ -34,7 +34,8 @@ export function TradeInspectorDrawer({
   const targetAccount = accounts.find((a) => a.id === trade.accountId);
   const accountName = targetAccount?.name || trade.accountId;
   const playbookName = playbooks.find((p) => p.id === trade.playbookId)?.name || 'Setup Personalizado';
-  const tradeReturnPct = calculateTradeReturnPct(trade.netPnl, targetAccount?.initialBalance);
+  const tradeReturnPct = resolveTradeReturnPct(trade, targetAccount?.initialBalance);
+  const isUnrecorded = trade.calculationMode === 'unrecorded';
 
   return (
     <>
@@ -59,6 +60,9 @@ export function TradeInspectorDrawer({
                     {trade.timePrecision === 'window'
                       ? ` · Ventana ${trade.operationalWindow === 'window_2' ? '2 (10:35–11:00)' : '1 (09:30–10:35)'}`
                       : ` · ${trade.entryDate.split('T')[1]?.slice(0, 5) || ''} NY`}
+                    {trade.durationMinutes !== null && trade.durationMinutes !== undefined && (
+                      <span className="ml-1 text-zinc-400">· {trade.durationMinutes} min</span>
+                    )}
                   </span>
                   <span className="text-xs font-extrabold px-2 py-0.5 rounded bg-white/[0.06] text-zinc-300 border border-white/[0.08]">
                     Grade: {trade.setupGrade || 'Sin evaluar'}
@@ -68,19 +72,35 @@ export function TradeInspectorDrawer({
                   <span>{trade.symbol} ({trade.direction})</span>
                   <span
                     className={`text-base px-2.5 py-0.5 rounded-full font-bold tabular-nums ${
-                      trade.netPnl >= 0
+                      tradeReturnPct !== null
+                        ? tradeReturnPct >= 0
+                          ? 'bg-emerald-500/10 text-emerald-400'
+                          : 'bg-rose-500/10 text-rose-400'
+                        : isUnrecorded
+                        ? 'bg-zinc-800 text-zinc-400'
+                        : trade.netPnl >= 0
                         ? 'bg-emerald-500/10 text-emerald-400'
                         : 'bg-rose-500/10 text-rose-400'
                     }`}
                   >
-                    {formatReturnPct(tradeReturnPct, {
-                      fallback: trade.netPnl >= 0 ? `+$${trade.netPnl.toFixed(2)}` : `-$${Math.abs(trade.netPnl).toFixed(2)}`,
-                    })}
+                    {tradeReturnPct !== null
+                      ? formatReturnPct(tradeReturnPct)
+                      : isUnrecorded
+                      ? 'Sin dato'
+                      : formatReturnPct(null, {
+                          fallback: trade.netPnl >= 0 ? `+$${trade.netPnl.toFixed(2)}` : `-$${Math.abs(trade.netPnl).toFixed(2)}`,
+                        })}
                   </span>
                   <span className="text-xs text-zinc-400 font-normal">
-                    ({trade.calculationMode === 'derived_r' ? '~' : ''}
-                    {trade.netPnl >= 0 ? `+$${trade.netPnl.toFixed(2)}` : `-$${Math.abs(trade.netPnl).toFixed(2)}`} USD
-                    {trade.calculationMode === 'derived_r' ? ' derivado' : ''})
+                    {isUnrecorded ? (
+                      '(Sin dato monetario)'
+                    ) : (
+                      <>
+                        ({trade.calculationMode === 'derived_r' ? '~' : ''}
+                        {trade.netPnl >= 0 ? `+$${trade.netPnl.toFixed(2)}` : `-$${Math.abs(trade.netPnl).toFixed(2)}`} USD
+                        {trade.calculationMode === 'derived_r' ? ' derivado' : ''})
+                      </>
+                    )}
                   </span>
                   <span className="text-[11px] px-2 py-0.5 rounded-md bg-zinc-900 border border-white/10 text-zinc-400 font-normal">
                     {trade.commissionUnmeasured ? 'Comisión: No medida' : `Comisión: $${trade.commission.toFixed(2)}`}
@@ -99,7 +119,7 @@ export function TradeInspectorDrawer({
             <div className="grid grid-cols-2 gap-3 bg-[#09090B] p-4 rounded-xl border border-white/[0.08] text-xs tabular-nums sm:grid-cols-4">
               {trade.pricesUnrecorded ? (
                 <div className="col-span-2 sm:col-span-4 text-center py-1 text-zinc-400 text-xs flex items-center justify-between">
-                  <span>Captura basada en Riesgo ({trade.riskPercentUsed || 1.0}%) y R-Multiple</span>
+                  <span>Registro simplificado V1b (R-Multiple independiente)</span>
                   <strong className={`text-sm ${theme.accentTextClass}`}>{trade.rMultiple}R</strong>
                 </div>
               ) : (
