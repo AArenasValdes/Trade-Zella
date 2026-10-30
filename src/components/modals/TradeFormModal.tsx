@@ -295,56 +295,101 @@ function TradeFormModalContent({
       finalTimePrecision = 'window';
     }
 
-    // Check optional experimental prices
+    // Parse form input numbers
     const parsedEntry = parseFloat(form.entryPrice) || 0;
     const parsedExit = parseFloat(form.exitPrice) || 0;
     const parsedSL = parseFloat(form.stopLoss) || 0;
     const parsedTP = parseFloat(form.takeProfit) || 0;
     const parsedSize = parseFloat(form.size) || 1;
 
-    const hasNewEnteredPrices = parsedEntry > 0 && parsedExit > 0;
-
-    // Determine whether financial fields were modified by user
-    const outcomeChanged = editingTrade ? (editingTrade.status === 'Win' ? 'TP' : 'SL') !== form.outcomeMode : true;
-    const rChanged = editingTrade ? Number(Math.abs(editingTrade.rMultiple).toFixed(2)) !== Number(rMultipleNum.toFixed(2)) : true;
+    // Detect actual financial changes vs non-financial edits (notes, emotions, duration)
+    const isFinancialChange = Boolean(
+      editingTrade && (
+        form.symbol.trim().toUpperCase() !== editingTrade.symbol.trim().toUpperCase() ||
+        form.direction !== editingTrade.direction ||
+        (editingTrade.status === 'Win' ? 'TP' : 'SL') !== form.outcomeMode ||
+        Number(rMultipleNum.toFixed(2)) !== Number(editingTrade.rMultiple.toFixed(2)) ||
+        (finalRealizedReturnPct ?? null) !== (editingTrade.realizedNetReturnPct ?? null) ||
+        parsedEntry !== (editingTrade.entryPrice || 0) ||
+        parsedExit !== (editingTrade.exitPrice || 0) ||
+        parsedSL !== (editingTrade.stopLoss || 0) ||
+        parsedTP !== (editingTrade.takeProfit || 0) ||
+        parsedSize !== (editingTrade.size || 1)
+      )
+    );
 
     let finalNetPnl = 0;
-    let finalCalculationMode: 'monetary' | 'derived_r' | 'unrecorded' = 'unrecorded';
+    let finalGrossPnl = 0;
     let finalCommission = 0;
     let finalCommissionUnmeasured = true;
+    let finalCalculationMode: 'monetary' | 'derived_r' | 'unrecorded' = 'unrecorded';
+    let finalPricesUnrecorded = true;
+    let finalEntryPrice = 0;
+    let finalExitPrice = 0;
+    let finalSL = 0;
+    let finalTP = 0;
+    let finalSize = 1;
+    let finalR = Number(signedR.toFixed(2));
+    let finalPlannedRR = Number(Math.abs(rMultipleNum).toFixed(2));
 
-    if (hasNewEnteredPrices) {
-      // Calculate P&L using verified instrument multiplier
-      finalCalculationMode = 'monetary';
-      const spec = getInstrumentSpec(form.symbol);
-      const priceDiff = form.direction === 'Long' ? (parsedExit - parsedEntry) : (parsedEntry - parsedExit);
-      finalNetPnl = Number((priceDiff * spec.pointValue * parsedSize).toFixed(2));
-      finalCommission = 0;
-      finalCommissionUnmeasured = true;
-    } else if (editingTrade && !outcomeChanged && !rChanged) {
-      // PRESERVE HISTORICAL METRICS INTACT (do not silent convert derived_r or monetary to unrecorded!)
+    if (editingTrade && !isFinancialChange) {
+      // PRESERVE HISTORICAL METRICS INTACT (editing only notes, duration, emotion, screenshots, etc.)
+      finalNetPnl = editingTrade.netPnl;
+      finalGrossPnl = editingTrade.grossPnl;
+      finalCommission = editingTrade.commission;
+      finalCommissionUnmeasured = Boolean(editingTrade.commissionUnmeasured);
       finalCalculationMode = editingTrade.calculationMode || 'monetary';
-      finalNetPnl = editingTrade.netPnl;
-      finalCommission = editingTrade.commission;
-      finalCommissionUnmeasured = Boolean(editingTrade.commissionUnmeasured);
-    } else if (editingTrade && editingTrade.calculationMode === 'derived_r') {
-      // User modified outcome or R on legacy derived trade: preserve derived_r mode
-      finalCalculationMode = 'derived_r';
-      finalNetPnl = editingTrade.netPnl; // keep audited or update accordingly
-      finalCommission = editingTrade.commission;
-      finalCommissionUnmeasured = Boolean(editingTrade.commissionUnmeasured);
-    } else if (editingTrade && editingTrade.calculationMode === 'monetary' && !hasNewEnteredPrices) {
-      // Preserved historical monetary trade
-      finalCalculationMode = 'monetary';
-      finalNetPnl = editingTrade.netPnl;
-      finalCommission = editingTrade.commission;
-      finalCommissionUnmeasured = Boolean(editingTrade.commissionUnmeasured);
+      finalPricesUnrecorded = Boolean(editingTrade.pricesUnrecorded);
+      finalEntryPrice = editingTrade.entryPrice;
+      finalExitPrice = editingTrade.exitPrice;
+      finalSL = editingTrade.stopLoss;
+      finalTP = editingTrade.takeProfit;
+      finalSize = editingTrade.size;
+      finalR = editingTrade.rMultiple;
+      finalPlannedRR = editingTrade.plannedRR;
     } else {
-      // Simplified trade without prices
-      finalCalculationMode = 'unrecorded';
-      finalNetPnl = 0;
-      finalCommission = 0;
-      finalCommissionUnmeasured = true;
+      // New trade or financial fields were explicitly altered
+      finalEntryPrice = parsedEntry;
+      finalExitPrice = parsedExit;
+      finalSL = parsedSL;
+      finalTP = parsedTP;
+      finalSize = parsedSize;
+      finalPricesUnrecorded = !(parsedEntry > 0 && parsedExit > 0);
+      finalR = isUnchangedHistoricalZero && editingTrade ? editingTrade.rMultiple : Number(signedR.toFixed(2));
+      finalPlannedRR = isUnchangedHistoricalZero && editingTrade ? editingTrade.plannedRR : Number(Math.abs(rMultipleNum).toFixed(2));
+
+      const hasEnteredPrices = parsedEntry > 0 && parsedExit > 0;
+
+      if (hasEnteredPrices) {
+        const spec = getInstrumentSpec(form.symbol);
+        if (spec.verified) {
+          finalCalculationMode = 'monetary';
+          const priceDiff = form.direction === 'Long' ? (parsedExit - parsedEntry) : (parsedEntry - parsedExit);
+          finalGrossPnl = Number((priceDiff * spec.pointValue * parsedSize).toFixed(2));
+          finalCommission = 0;
+          finalCommissionUnmeasured = true;
+          finalNetPnl = finalGrossPnl;
+        } else {
+          // Unverified spec: do NOT invent generic /pt multiplier as real P&L!
+          finalCalculationMode = 'unrecorded';
+          finalGrossPnl = 0;
+          finalNetPnl = 0;
+          finalCommission = 0;
+          finalCommissionUnmeasured = true;
+        }
+      } else if (editingTrade && editingTrade.calculationMode === 'derived_r') {
+        finalCalculationMode = 'derived_r';
+        finalNetPnl = editingTrade.netPnl;
+        finalGrossPnl = editingTrade.grossPnl;
+        finalCommission = editingTrade.commission;
+        finalCommissionUnmeasured = Boolean(editingTrade.commissionUnmeasured);
+      } else {
+        finalCalculationMode = 'unrecorded';
+        finalGrossPnl = 0;
+        finalNetPnl = 0;
+        finalCommission = 0;
+        finalCommissionUnmeasured = true;
+      }
     }
 
     // Preserve historic pdArrays elements if editing
@@ -367,20 +412,20 @@ function TradeFormModalContent({
       entryDate: finalEntryDate,
       timePrecision: finalTimePrecision,
       operationalWindow: form.selectedWindow,
-      entryPrice: hasNewEnteredPrices ? parsedEntry : (editingTrade?.entryPrice || 0),
-      exitPrice: hasNewEnteredPrices ? parsedExit : (editingTrade?.exitPrice || 0),
-      stopLoss: parsedSL > 0 ? parsedSL : (editingTrade?.stopLoss || 0),
-      takeProfit: parsedTP > 0 ? parsedTP : (editingTrade?.takeProfit || 0),
-      size: parsedSize > 0 ? parsedSize : (editingTrade?.size || 1),
-      pricesUnrecorded: !hasNewEnteredPrices && !(editingTrade && editingTrade.entryPrice > 0),
+      entryPrice: finalEntryPrice,
+      exitPrice: finalExitPrice,
+      stopLoss: finalSL,
+      takeProfit: finalTP,
+      size: finalSize,
+      pricesUnrecorded: finalPricesUnrecorded,
       riskPercentUsed: editingTrade?.riskPercentUsed || 1.0,
       htfAligned: editingTrade?.htfAligned || ['1D', '4H', '2H', '30m'],
-      grossPnl: finalNetPnl + finalCommission,
+      grossPnl: finalGrossPnl,
       commission: finalCommission,
       commissionUnmeasured: finalCommissionUnmeasured,
       netPnl: finalNetPnl,
-      plannedRR: isUnchangedHistoricalZero && editingTrade ? editingTrade.plannedRR : Number(Math.abs(rMultipleNum).toFixed(2)),
-      rMultiple: isUnchangedHistoricalZero && editingTrade ? editingTrade.rMultiple : Number(signedR.toFixed(2)),
+      plannedRR: finalPlannedRR,
+      rMultiple: finalR,
       realizedNetReturnPct: finalRealizedReturnPct !== null ? finalRealizedReturnPct : (editingTrade?.realizedNetReturnPct ?? null),
       durationMinutes: finalDurationMinutes,
       status: form.outcomeMode === 'TP' ? 'Win' : 'Loss',

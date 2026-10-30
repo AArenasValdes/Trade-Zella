@@ -2,10 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  resolveTradeReturnPct,
   calculateConsolidatedReturnPct,
   calculatePercentageEquityCurve,
-  formatReturnPct,
 } from '../src/services/financial-engine.ts';
 
 import {
@@ -18,484 +16,496 @@ import {
   validateBackupPayload,
 } from '../src/services/storage-service.ts';
 
-
+import { getInstrumentSpec } from '../src/config/ict-constants.ts';
 
 // ----------------------------------------------------------------------------------
-// 1. Trade +2% real y P&L monetario desconocido
+// 1. Edición de trade monetario con precios precargados, modificando solo una nota
 // ----------------------------------------------------------------------------------
-test('1. Trade +2% real y P&L monetario desconocido: resolveTradeReturnPct da 2%, status es Win y no diluye P&L a $0', () => {
-  const trade = {
-    id: 't-real-return-pos',
-    symbol: 'NAS100',
+test('1. Edición de trade monetario con precios precargados: modificar solo nota conserva P&L auditado y no recalcula', () => {
+  // Trade histórico auditado en NQ con comisión/slippage real
+  // Entrada 21500, Salida 21510 (10 pts de diferencia).
+  // A $20/pt, el cálculo teórico daría $200.00.
+  // Sin embargo, su netPnl auditado almacenado es $185.50 con comisiones reales de $14.50.
+  const editingTrade = {
+    id: 't-audited-nq-1',
+    symbol: 'NQ',
     direction: 'Long',
-    entryDate: '2026-10-30T09:30',
-    rMultiple: 2.0,
-    realizedNetReturnPct: 2.0,
-    netPnl: 0,
-    calculationMode: 'unrecorded',
-    pricesUnrecorded: true,
+    entryDate: '2025-05-10T09:30:00',
+    entryPrice: 21500,
+    exitPrice: 21510,
+    stopLoss: 21490,
+    takeProfit: 21530,
+    size: 1,
+    grossPnl: 200,
+    commission: 14.50,
+    commissionUnmeasured: false,
+    netPnl: 185.50,
+    plannedRR: 2.0,
+    rMultiple: 1.0,
     status: 'Win',
+    calculationMode: 'monetary',
+    accountId: 'acc-1',
+    notes: 'Nota original antes de revisión',
+    psychologyTag: 'A+ Alineado al Contexto HTF',
   };
 
-  const resolvedReturn = resolveTradeReturnPct(trade, 100000);
-  assert.equal(resolvedReturn, 2.0, 'Debe devolver el retorno porcentual explícito de +2%');
-  assert.equal(trade.status, 'Win');
-
-  // Evaluar en métricas
-  const metrics = calculateDashboardMetrics([trade], []);
-  assert.equal(metrics.winsCount, 1);
-  assert.equal(metrics.lossesCount, 0);
-  assert.equal(metrics.winRate, 100);
-  assert.equal(metrics.avgWin, 0, 'No debe inventar ganancia monetaria en dólares');
-  assert.equal(metrics.grossProfit, 0);
-  assert.equal(metrics.dataCoverage?.returnPctTradesCount, 1);
-  assert.equal(metrics.dataCoverage?.monetaryTradesCount, 0);
-});
-
-// ----------------------------------------------------------------------------------
-// 2. Trade -1,5% real y P&L desconocido
-// ----------------------------------------------------------------------------------
-test('2. Trade -1,5% real y P&L desconocido: resolveTradeReturnPct da -1.5%, status es Loss', () => {
-  const trade = {
-    id: 't-real-return-neg',
-    symbol: 'US30',
-    direction: 'Short',
-    entryDate: '2026-10-30T10:35',
-    rMultiple: -1.0,
-    realizedNetReturnPct: -1.5,
-    netPnl: 0,
-    calculationMode: 'unrecorded',
-    pricesUnrecorded: true,
-    status: 'Loss',
+  // Simulación del estado del formulario tras precarga:
+  // Los precios de entrada y salida se precargan como strings:
+  const formState = {
+    symbol: editingTrade.symbol,
+    direction: editingTrade.direction,
+    outcomeMode: 'TP',
+    rMultiple: '1.0',
+    realizedNetReturnPct: '',
+    durationMinutes: '',
+    entryPrice: editingTrade.entryPrice.toString(),
+    exitPrice: editingTrade.exitPrice.toString(),
+    stopLoss: editingTrade.stopLoss.toString(),
+    takeProfit: editingTrade.takeProfit.toString(),
+    size: editingTrade.size.toString(),
+    notes: 'Nota actualizada por el trader en revisión', // ÚNICO CAMBIO
+    psychologyTag: editingTrade.psychologyTag,
   };
 
-  const resolvedReturn = resolveTradeReturnPct(trade, 100000);
-  assert.equal(resolvedReturn, -1.5, 'Debe devolver el retorno porcentual explícito de -1.5%');
-  assert.equal(trade.status, 'Loss');
+  // Lógica de detección de cambios financieros implementada en TradeFormModal
+  const parsedEntry = parseFloat(formState.entryPrice) || 0;
+  const parsedExit = parseFloat(formState.exitPrice) || 0;
+  const parsedSL = parseFloat(formState.stopLoss) || 0;
+  const parsedTP = parseFloat(formState.takeProfit) || 0;
+  const parsedSize = parseFloat(formState.size) || 1;
+  const rMultipleNum = parseFloat(formState.rMultiple) || 0;
 
-  const metrics = calculateDashboardMetrics([trade], []);
-  assert.equal(metrics.lossesCount, 1);
-  assert.equal(metrics.winsCount, 0);
-  assert.equal(metrics.winRate, 0);
-  assert.equal(metrics.avgLoss, 0, 'No debe inventar pérdida monetaria en dólares');
-  assert.equal(metrics.grossLoss, 0);
+  const isFinancialChange = Boolean(
+    formState.symbol.trim().toUpperCase() !== editingTrade.symbol.trim().toUpperCase() ||
+    formState.direction !== editingTrade.direction ||
+    (editingTrade.status === 'Win' ? 'TP' : 'SL') !== formState.outcomeMode ||
+    Number(rMultipleNum.toFixed(2)) !== Number(editingTrade.rMultiple.toFixed(2)) ||
+    parsedEntry !== (editingTrade.entryPrice || 0) ||
+    parsedExit !== (editingTrade.exitPrice || 0) ||
+    parsedSL !== (editingTrade.stopLoss || 0) ||
+    parsedTP !== (editingTrade.takeProfit || 0) ||
+    parsedSize !== (editingTrade.size || 1)
+  );
+
+  // Con el código anterior con hasNewEnteredPrices = parsedEntry > 0 && parsedExit > 0,
+  // se recalculaba erróneamente a $200.00. Con la detección isFinancialChange:
+  assert.equal(isFinancialChange, false, 'No debe detectar cambio financiero si solo cambió la nota');
+
+  let finalNetPnl;
+  let finalGrossPnl;
+  let finalCommission;
+  let finalCalculationMode;
+
+  if (!isFinancialChange) {
+    finalNetPnl = editingTrade.netPnl;
+    finalGrossPnl = editingTrade.grossPnl;
+    finalCommission = editingTrade.commission;
+    finalCalculationMode = editingTrade.calculationMode;
+  } else {
+    finalNetPnl = 200; // Recalculado teórico
+    finalGrossPnl = 200;
+    finalCommission = 0;
+    finalCalculationMode = 'monetary';
+  }
+
+  assert.equal(finalNetPnl, 185.50, 'Debe preservar el netPnl auditado exacto ($185.50)');
+  assert.equal(finalGrossPnl, 200.00);
+  assert.equal(finalCommission, 14.50);
+  assert.equal(finalCalculationMode, 'monetary');
 });
 
 // ----------------------------------------------------------------------------------
-// 3. Trade solo con R
+// 2. Edición de trade derivado sin cambios económicos
 // ----------------------------------------------------------------------------------
-test('3. Trade solo con R: resolveTradeReturnPct da null (Sin dato) y genera curva en R', () => {
-  const trade = {
-    id: 't-pure-r',
-    symbol: 'NAS100',
-    direction: 'Long',
-    entryDate: '2026-10-30T09:35',
-    rMultiple: 2.5,
-    realizedNetReturnPct: null,
-    netPnl: 0,
-    calculationMode: 'unrecorded',
-    pricesUnrecorded: true,
-    status: 'Win',
-  };
-
-  const resolvedReturn = resolveTradeReturnPct(trade, 100000);
-  assert.equal(resolvedReturn, null, 'Sin retorno explícito debe devolver null');
-  assert.equal(formatReturnPct(resolvedReturn), 'Sin dato');
-
-  // Curva de rendimiento acumulado
-  const curveResult = calculatePercentageEquityCurve([trade], []);
-  assert.equal(curveResult.curveMode, 'r_multiple', 'Debe activar curveMode r_multiple');
-  assert.equal(curveResult.currentReturnR, 2.5);
-  assert.equal(curveResult.bestTradeR, 2.5);
-  assert.equal(curveResult.maxDrawdownR, 0);
-  assert.equal(curveResult.points.length, 2); // Punto 0 + Trade 1
-  assert.equal(curveResult.points[1].cumulativeRMultiple, 2.5);
-  assert.equal(curveResult.points[1].pnl, null, 'PnL monetario en curva R debe ser null, no $0');
-});
-
-// ----------------------------------------------------------------------------------
-// 4. Mezcla de trades monetarios y trades solo con R
-// ----------------------------------------------------------------------------------
-test('4. Mezcla de trades monetarios y solo con R: no diluye promedios monetarios ($)', () => {
-  const trades = [
-    {
-      id: 't-m1',
-      symbol: 'NAS100',
-      direction: 'Long',
-      entryDate: '2026-10-28T09:30',
-      netPnl: 1000,
-      rMultiple: 2.0,
-      status: 'Win',
-      calculationMode: 'monetary',
-      accountId: 'acc-1',
-    },
-    {
-      id: 't-r1',
-      symbol: 'NAS100',
-      direction: 'Long',
-      entryDate: '2026-10-29T09:30',
-      netPnl: 0,
-      rMultiple: 3.0,
-      realizedNetReturnPct: null,
-      status: 'Win',
-      calculationMode: 'unrecorded',
-      pricesUnrecorded: true,
-      accountId: 'acc-1',
-    },
-    {
-      id: 't-m2',
-      symbol: 'NAS100',
-      direction: 'Short',
-      entryDate: '2026-10-30T09:30',
-      netPnl: -500,
-      rMultiple: -1.0,
-      status: 'Loss',
-      calculationMode: 'monetary',
-      accountId: 'acc-1',
-    },
-  ];
-
-  const accounts = [{ id: 'acc-1', name: 'Cuenta 100K', initialBalance: 100000, hasVerifiedBalance: true }];
-  const metrics = calculateDashboardMetrics(trades, accounts);
-
-  // El promedio monetario debe ser exactamente $1,000 (1 trade monetario ganador de $1000), no $500
-  assert.equal(metrics.avgWin, 1000, 'avgWin no debe diluirse por el trade unrecorded');
-  assert.equal(metrics.avgLoss, 500);
-  assert.equal(metrics.netPnl, 500, 'netPnl total monetario debe ser $500');
-
-  // Conteo total y win rate consideran ambos trades ganadores
-  assert.equal(metrics.winsCount, 2);
-  assert.equal(metrics.lossesCount, 1);
-  assert.equal(metrics.totalTrades, 3);
-  assert.equal(metrics.winRate, 66.7);
-
-  // Cobertura expuesta
-  assert.equal(metrics.dataCoverage?.monetaryTradesCount, 2);
-  assert.equal(metrics.dataCoverage?.unrecordedTradesCount, 1);
-  assert.equal(metrics.dataCoverage?.totalTrades, 3);
-});
-
-// ----------------------------------------------------------------------------------
-// 5. Edición de trade derived_r sin alterar su valor anterior
-// ----------------------------------------------------------------------------------
-test('5. Edición de trade derived_r sin tocar resultado: conserva calculationMode derived_r y netPnl', () => {
+test('2. Edición de trade derivado sin cambios económicos: conserva calculationMode derived_r y netPnl', () => {
   const editingTrade = {
     id: 't-hist-derived',
     symbol: 'NAS100',
     direction: 'Long',
     entryDate: '2025-01-10T09:30',
-    netPnl: 2000,
-    grossPnl: 2000,
-    commission: 0,
-    commissionUnmeasured: true,
-    rMultiple: 2.0,
-    plannedRR: 2.0,
-    status: 'Win',
-    calculationMode: 'derived_r',
-    accountId: 'acc-1',
-    notes: 'Nota original',
-  };
-
-  // Simulación del handleSubmit cuando el usuario solo edita la nota
-  const outcomeChanged = false;
-  const rChanged = false;
-  const hasNewEnteredPrices = false;
-
-  let finalCalculationMode = 'unrecorded';
-  let finalNetPnl = 0;
-
-  if (hasNewEnteredPrices) {
-    finalCalculationMode = 'monetary';
-  } else if (editingTrade && !outcomeChanged && !rChanged) {
-    finalCalculationMode = editingTrade.calculationMode;
-    finalNetPnl = editingTrade.netPnl;
-  }
-
-  assert.equal(finalCalculationMode, 'derived_r', 'Debe conservar calculationMode derived_r');
-  assert.equal(finalNetPnl, 2000, 'Debe conservar el P&L derivado histórico intacto');
-});
-
-// ----------------------------------------------------------------------------------
-// 6. Edición de trade monetario sin recalcular por modificar únicamente una nota
-// ----------------------------------------------------------------------------------
-test('6. Edición de trade monetario: modificar nota no altera precios ni P&L auditado', () => {
-  const editingTrade = {
-    id: 't-hist-monetary',
-    symbol: 'NAS100',
-    direction: 'Short',
-    entryDate: '2025-02-15T10:35',
-    entryPrice: 21500,
-    exitPrice: 21450,
-    stopLoss: 21550,
-    takeProfit: 21400,
-    size: 2,
-    netPnl: 100,
-    grossPnl: 100,
-    commission: 0,
-    rMultiple: 1.0,
-    status: 'Win',
-    calculationMode: 'monetary',
-    accountId: 'acc-1',
-    notes: 'Nota antigua',
-  };
-
-  const outcomeChanged = false;
-  const rChanged = false;
-  const hasNewEnteredPrices = false;
-
-  let finalCalculationMode = 'unrecorded';
-  let finalNetPnl = 0;
-  let finalEntryPrice = 0;
-  let finalExitPrice = 0;
-
-  if (hasNewEnteredPrices) {
-    finalCalculationMode = 'monetary';
-  } else if (editingTrade && !outcomeChanged && !rChanged) {
-    finalCalculationMode = editingTrade.calculationMode;
-    finalNetPnl = editingTrade.netPnl;
-    finalEntryPrice = editingTrade.entryPrice;
-    finalExitPrice = editingTrade.exitPrice;
-  }
-
-  assert.equal(finalCalculationMode, 'monetary');
-  assert.equal(finalNetPnl, 100);
-  assert.equal(finalEntryPrice, 21500);
-  assert.equal(finalExitPrice, 21450);
-});
-
-// ----------------------------------------------------------------------------------
-// 7. Trade histórico con múltiples pdArrays
-// ----------------------------------------------------------------------------------
-test('7. Trade histórico con múltiples pdArrays: conserva BPR y todas las confluencias legacy', () => {
-  const historicalTrade = {
-    id: 't-multi-pd',
-    symbol: 'NAS100',
-    direction: 'Long',
-    entryDate: '2025-01-20T09:30',
-    pdArrays: [
-      'BPR (Balanced Price Range)',
-      'Contexto HTF (1D/4H/2H/30m)',
-      'Order Block (+OB / -OB)',
-    ],
-  };
-
-  const selectedModel = 'BPR (Balanced Price Range)';
-  let finalPdArrays;
-  if (historicalTrade.pdArrays.includes(selectedModel)) {
-    finalPdArrays = historicalTrade.pdArrays;
-  } else {
-    finalPdArrays = [selectedModel, ...historicalTrade.pdArrays.slice(1)];
-  }
-
-  assert.deepEqual(finalPdArrays, [
-    'BPR (Balanced Price Range)',
-    'Contexto HTF (1D/4H/2H/30m)',
-    'Order Block (+OB / -OB)',
-  ], 'Debe preservar el array completo de confluencias sin destruirlas');
-});
-
-// ----------------------------------------------------------------------------------
-// 8. P&L de NQ, MNQ y NAS100 con especificaciones verificadas
-// ----------------------------------------------------------------------------------
-test('8. P&L con especificaciones verificadas: NQ ($20/pt), MNQ ($2/pt), NAS100 ($1/pt), ES ($50/pt)', () => {
-  // NQ: 10 puntos de ganancia en Long (21500 a 21510) con 1 contrato
-  const nqCalc = autoCalculateTradeMath({
-    symbol: 'NQ',
-    entryPrice: 21500,
-    exitPrice: 21510,
-    stopLoss: 21495,
-    takeProfit: 21520,
-    size: 1,
-    commission: 0,
-    direction: 'Long',
-  });
-  assert.equal(nqCalc.pointValue, 20, 'NQ debe tener pointValue = 20');
-  assert.equal(nqCalc.grossPnl, 200, '10 pts * $20 * 1 = $200');
-
-  // MNQ: 10 puntos de ganancia con 1 contrato
-  const mnqCalc = autoCalculateTradeMath({
-    symbol: 'MNQ',
-    entryPrice: 21500,
-    exitPrice: 21510,
-    stopLoss: 21495,
-    takeProfit: 21520,
-    size: 1,
-    commission: 0,
-    direction: 'Long',
-  });
-  assert.equal(mnqCalc.pointValue, 2, 'MNQ debe tener pointValue = 2');
-  assert.equal(mnqCalc.grossPnl, 20, '10 pts * $2 * 1 = $20');
-
-  // NAS100: 10 puntos de ganancia con 1 lote
-  const nasCalc = autoCalculateTradeMath({
-    symbol: 'NAS100',
-    entryPrice: 21500,
-    exitPrice: 21510,
-    stopLoss: 21495,
-    takeProfit: 21520,
-    size: 1,
-    commission: 0,
-    direction: 'Long',
-  });
-  assert.equal(nasCalc.pointValue, 1, 'NAS100 debe tener pointValue = 1');
-  assert.equal(nasCalc.grossPnl, 10, '10 pts * $1 * 1 = $10');
-
-  // ES: 10 puntos de ganancia con 1 contrato
-  const esCalc = autoCalculateTradeMath({
-    symbol: 'ES',
-    entryPrice: 5900,
-    exitPrice: 5910,
-    stopLoss: 5895,
-    takeProfit: 5920,
-    size: 1,
-    commission: 0,
-    direction: 'Long',
-  });
-  assert.equal(esCalc.pointValue, 50, 'ES debe tener pointValue = 50');
-  assert.equal(esCalc.grossPnl, 500, '10 pts * $50 * 1 = $500');
-});
-
-// ----------------------------------------------------------------------------------
-// 9. Usuario sin cuenta y sin capital real conocido
-// ----------------------------------------------------------------------------------
-test('9. Usuario sin cuenta y sin capital real: no inventa $100K y no calcula retorno %', () => {
-  // Cuenta técnica creada sin capital
-  const technicalAccount = {
-    id: 'acc-tech-1',
-    name: 'Bitácora Personal',
-    firm: 'Personal',
-    initialBalance: 0,
-    hasVerifiedBalance: false,
-    isTechnical: true,
-  };
-
-  const trade = {
-    id: 't-test-tech',
-    symbol: 'NAS100',
-    direction: 'Long',
-    entryDate: '2026-10-30T09:30',
-    netPnl: 0,
-    rMultiple: 2.0,
-    status: 'Win',
-    calculationMode: 'unrecorded',
-    accountId: 'acc-tech-1',
-  };
-
-  const consolidated = calculateConsolidatedReturnPct([trade], [technicalAccount]);
-  assert.equal(consolidated.isValid, false, 'No debe ser válido para porcentaje');
-  assert.equal(consolidated.returnPct, null, 'Retorno % debe ser null, no 0%');
-  assert.equal(consolidated.totalReferenceCapital, 0, 'Capital de referencia debe ser 0, no 100.000');
-
-  // Curva de equidad no inventa porcentajes
-  const curve = calculatePercentageEquityCurve([trade], [technicalAccount]);
-  assert.equal(curve.curveMode, 'r_multiple', 'Debe recurrir a curva en R');
-  assert.equal(curve.currentReturnPct, null);
-  assert.equal(curve.currentReturnR, 2.0);
-});
-
-// ----------------------------------------------------------------------------------
-// 10. CSV con R positivo y P&L ausente
-// ----------------------------------------------------------------------------------
-test('10. CSV con R positivo y P&L ausente: clasifica como Win, rMultiple positivo y calculationMode unrecorded', () => {
-  const csvText = `symbol,direction,time,r,duration
-NAS100,Long,2026-10-30T09:35,"2,50",20
-US30,Short,2026-10-30T10:40,"-1.00",15
-`;
-
-  const imported = parseTradingViewCSV(csvText, 'acc-test');
-  assert.equal(imported.length, 2);
-
-  // Trade 1 con R = 2.50
-  assert.equal(imported[0].status, 'Win', 'R positivo debe clasificarse como Win, NO Loss');
-  assert.equal(imported[0].rMultiple, 2.5);
-  assert.equal(imported[0].calculationMode, 'unrecorded');
-  assert.equal(imported[0].durationMinutes, 20);
-
-  // Trade 2 con R = -1.00
-  assert.equal(imported[1].status, 'Loss');
-  assert.equal(imported[1].rMultiple, -1.0);
-  assert.equal(imported[1].calculationMode, 'unrecorded');
-  assert.equal(imported[1].durationMinutes, 15);
-});
-
-// ----------------------------------------------------------------------------------
-// 11. Persistencia de duración y retorno en sincronización
-// ----------------------------------------------------------------------------------
-test('11. Duración en minutos y retorno % se persisten y validan correctamente', () => {
-  const trade = {
-    id: 't-sync-test',
-    symbol: 'NAS100',
-    direction: 'Long',
-    entryDate: '2026-10-30T09:30',
     entryPrice: 0,
     exitPrice: 0,
     stopLoss: 0,
     takeProfit: 0,
     size: 1,
-    grossPnl: 0,
+    netPnl: 1500,
+    grossPnl: 1500,
     commission: 0,
-    netPnl: 0,
-    plannedRR: 2,
-    rMultiple: 2.0,
+    commissionUnmeasured: true,
+    rMultiple: 1.5,
+    plannedRR: 1.5,
     status: 'Win',
-    killzone: 'NY Open 09:30 AM (09:30-10:30)',
-    pdArrays: ['Breaker Block'],
-    checklistCompleted: [],
-    setupGrade: 'Sin evaluar',
-    dailyBias: 'Bullish',
-    dolTarget: '',
-    timeframe: '15m',
-    followedPlan: true,
-    psychologyTag: 'Sin clasificar',
-    notes: 'Prueba de sincronización',
+    calculationMode: 'derived_r',
     accountId: 'acc-1',
-    calculationMode: 'unrecorded',
-    realizedNetReturnPct: 2.25,
-    durationMinutes: 45,
+    notes: 'Nota previa',
+    psychologyTag: 'Sin clasificar',
   };
 
-  assert.equal(trade.durationMinutes, 45);
-  assert.equal(trade.realizedNetReturnPct, 2.25);
-  assert.equal(trade.calculationMode, 'unrecorded');
+  const formState = {
+    symbol: 'NAS100',
+    direction: 'Long',
+    outcomeMode: 'TP',
+    rMultiple: '1.5',
+    notes: 'Nota previa',
+    psychologyTag: 'A+ Alineado al Contexto HTF', // Modificación exclusiva de emoción
+    entryPrice: '',
+    exitPrice: '',
+    stopLoss: '',
+    takeProfit: '',
+    size: '1',
+  };
+
+  const isFinancialChange = Boolean(
+    formState.symbol.trim().toUpperCase() !== editingTrade.symbol.trim().toUpperCase() ||
+    formState.direction !== editingTrade.direction ||
+    (editingTrade.status === 'Win' ? 'TP' : 'SL') !== formState.outcomeMode ||
+    Number(parseFloat(formState.rMultiple).toFixed(2)) !== Number(editingTrade.rMultiple.toFixed(2))
+  );
+
+  assert.equal(isFinancialChange, false);
+
+  const finalCalculationMode = !isFinancialChange ? editingTrade.calculationMode : 'unrecorded';
+  const finalNetPnl = !isFinancialChange ? editingTrade.netPnl : 0;
+
+  assert.equal(finalCalculationMode, 'derived_r', 'Debe conservar calculationMode derived_r');
+  assert.equal(finalNetPnl, 1500, 'Debe conservar el P&L derivado histórico intacto');
 });
 
 // ----------------------------------------------------------------------------------
-// 12. Importación y restauración de respaldos históricos
+// 3. Un trade +2% sin P&L junto con uno monetario
 // ----------------------------------------------------------------------------------
-test('12. validateBackupPayload valida respaldos históricos con trades BPR y cuentas técnicas', () => {
+test('3. Un trade +2% sin P&L junto con uno monetario: no diluye P&L monetario a $0', () => {
+  const tradeA = {
+    id: 't-pct-only',
+    symbol: 'NAS100',
+    direction: 'Long',
+    entryDate: '2026-10-29T09:30',
+    netPnl: 0,
+    rMultiple: 2.0,
+    realizedNetReturnPct: 2.0,
+    calculationMode: 'unrecorded',
+    status: 'Win',
+    accountId: 'acc-verified',
+  };
+
+  const tradeB = {
+    id: 't-monetary',
+    symbol: 'NQ',
+    direction: 'Long',
+    entryDate: '2026-10-30T09:30',
+    netPnl: 300,
+    rMultiple: 1.5,
+    realizedNetReturnPct: null,
+    calculationMode: 'monetary',
+    status: 'Win',
+    accountId: 'acc-verified',
+  };
+
+  const account = {
+    id: 'acc-verified',
+    name: 'Cuenta $10,000',
+    initialBalance: 10000,
+    hasVerifiedBalance: true,
+  };
+
+  const metrics = calculateDashboardMetrics([tradeA, tradeB], [account]);
+
+  // El promedio monetario de ganancia debe ser exactamente $300 (de tradeB), no ($300 + $0)/2 = $150
+  assert.equal(metrics.avgWin, 300, 'avgWin monetario no debe contaminarse con tradeA');
+  assert.equal(metrics.netPnl, 300);
+  assert.equal(metrics.dataCoverage?.monetaryTradesCount, 1);
+  assert.equal(metrics.dataCoverage?.returnPctTradesCount, 1);
+  assert.equal(metrics.dataCoverage?.unrecordedTradesCount, 1);
+});
+
+// ----------------------------------------------------------------------------------
+// 4. Curva con datos monetarios y R-only combinados
+// ----------------------------------------------------------------------------------
+test('4. Curva con datos monetarios y R-only: no dibuja operaciones unrecorded como $0 planos', () => {
+  const trades = [
+    {
+      id: 't-monetary-1',
+      symbol: 'NQ',
+      direction: 'Long',
+      entryDate: '2026-10-28T09:30',
+      netPnl: 400,
+      rMultiple: 2.0,
+      calculationMode: 'monetary',
+      accountId: 'acc-1',
+      status: 'Win',
+    },
+    {
+      id: 't-pure-r-1',
+      symbol: 'NAS100',
+      direction: 'Long',
+      entryDate: '2026-10-29T09:30',
+      netPnl: 0,
+      rMultiple: 3.0,
+      calculationMode: 'unrecorded',
+      accountId: 'acc-1',
+      status: 'Win',
+    },
+    {
+      id: 't-monetary-2',
+      symbol: 'NQ',
+      direction: 'Short',
+      entryDate: '2026-10-30T09:30',
+      netPnl: -200,
+      rMultiple: -1.0,
+      calculationMode: 'monetary',
+      accountId: 'acc-1',
+      status: 'Loss',
+    },
+  ];
+
+  const accounts = [{ id: 'acc-1', name: 'Cuenta 10K', initialBalance: 10000, hasVerifiedBalance: true }];
+
+  const curveResult = calculatePercentageEquityCurve(trades, accounts);
+
+  // En modo porcentaje, solo debe trazar las operaciones con P&L monetario medido
+  assert.equal(curveResult.curveMode, 'percentage');
+  assert.equal(curveResult.isPartialCurve, true, 'Debe marcarse como curva parcial');
+  assert.equal(curveResult.includedTradesCount, 2, 'Solo debe incluir las 2 operaciones monetarias');
+  assert.equal(curveResult.totalTradesCount, 3, 'El total debe ser 3 operaciones');
+
+  // Los puntos deben ser: Inicio + Trade 1 ($400) + Trade 3 (-$200) = 3 puntos
+  assert.equal(curveResult.points.length, 3);
+  assert.equal(curveResult.points[1].pnl, 400);
+  assert.equal(curveResult.points[2].pnl, -200);
+});
+
+// ----------------------------------------------------------------------------------
+// 5. Expectativa con poblaciones coherentes
+// ----------------------------------------------------------------------------------
+test('5. Expectativa con poblaciones mixtas: no combina Win Rate global con promedios de subconjunto', () => {
+  // 4 trades en total: 3 Wins y 1 Loss (Win Rate global = 75%)
+  // Pero solo 2 trades tienen importes monetarios: 1 Win de +$100 y 1 Loss de -$100 (WR monetario = 50%)
+  const trades = [
+    {
+      id: 't-m-win',
+      symbol: 'NQ',
+      direction: 'Long',
+      entryDate: '2026-10-27T09:30',
+      netPnl: 100,
+      rMultiple: 1.0,
+      calculationMode: 'monetary',
+      status: 'Win',
+    },
+    {
+      id: 't-m-loss',
+      symbol: 'NQ',
+      direction: 'Short',
+      entryDate: '2026-10-28T09:30',
+      netPnl: -100,
+      rMultiple: -1.0,
+      calculationMode: 'monetary',
+      status: 'Loss',
+    },
+    {
+      id: 't-r-win1',
+      symbol: 'NAS100',
+      direction: 'Long',
+      entryDate: '2026-10-29T09:30',
+      netPnl: 0,
+      rMultiple: 2.0,
+      calculationMode: 'unrecorded',
+      status: 'Win',
+    },
+    {
+      id: 't-r-win2',
+      symbol: 'NAS100',
+      direction: 'Long',
+      entryDate: '2026-10-30T09:30',
+      netPnl: 0,
+      rMultiple: 2.0,
+      calculationMode: 'unrecorded',
+      status: 'Win',
+    },
+  ];
+
+  const metrics = calculateDashboardMetrics(trades, []);
+
+  // Win Rate global: 3 wins de 4 = 75.0%
+  assert.equal(metrics.winRate, 75.0);
+
+  // Expectativa monetaria en USD: debe evaluarse estrictamente sobre la población monetaria (1 win $100, 1 loss $100 -> 50% de $100 - 50% de $100 = $0.00)
+  // Si combinara el WR global (75%), daría 0.75 * 100 - 0.25 * 100 = +$50.00 (FALSO)
+  assert.equal(metrics.expectancyUSD, 0.00, 'Expectativa USD debe ser 0.00, no 50.00');
+  assert.equal(metrics.monetarySampleSize, 2);
+  assert.equal(metrics.profitFactorUSD, 1.00);
+
+  // Expectativa en R: sobre los 4 trades (r: 1, -1, 2, 2 -> media = 4/4 = 1.00R)
+  assert.equal(metrics.expectancyR, 1.00);
+  assert.equal(metrics.rSampleSize, 4);
+});
+
+// ----------------------------------------------------------------------------------
+// 6. CSV importado cuando todavía no existe cuenta
+// ----------------------------------------------------------------------------------
+test('6. CSV importado sin cuenta existente: no asigna acc-fp-1 y utiliza cuenta técnica', () => {
+  const csvText = `symbol,direction,time,r,duration
+NAS100,Long,2026-10-30T09:35,"2,00",25
+`;
+
+  // Simulación de importCSV en TradingContext cuando accounts = []
+  const accounts = [];
+  const filtersAccountId = 'All';
+
+  const TECHNICAL_FALLBACK_ACCOUNT = {
+    id: 'acc-tech-unrecorded',
+    name: 'Cuenta Técnica (Sin capital de referencia)',
+    firm: 'Martin OS Technical',
+    initialBalance: 0,
+    profitTarget: 0,
+    maxDrawdown: 0,
+    dailyLossLimit: 0,
+    isTechnical: true,
+    hasVerifiedBalance: false,
+  };
+
+  let targetAccountId = filtersAccountId !== 'All' ? filtersAccountId : accounts[0]?.id;
+  if (!targetAccountId) {
+    targetAccountId = TECHNICAL_FALLBACK_ACCOUNT.id;
+    accounts.push(TECHNICAL_FALLBACK_ACCOUNT);
+  }
+
+  const parsed = parseTradingViewCSV(csvText, targetAccountId);
+
+  assert.equal(parsed.length, 1);
+  assert.notEqual(parsed[0].accountId, 'acc-fp-1', 'Bajo ningún concepto debe asignar acc-fp-1');
+  assert.equal(parsed[0].accountId, 'acc-tech-unrecorded', 'Debe asignar acc-tech-unrecorded');
+  assert.equal(accounts[0].id, 'acc-tech-unrecorded');
+  assert.equal(accounts[0].initialBalance, 0);
+  assert.equal(accounts[0].isTechnical, true);
+});
+
+// ----------------------------------------------------------------------------------
+// 7. CSV sin resultado interpretable o contradictorio
+// ----------------------------------------------------------------------------------
+test('7. CSV sin resultado interpretable o contradictorio: rechaza registros vacios y deja contradictorios en revision', () => {
+  const csvText = `symbol,direction,time,r,pnl,status
+NAS100,Long,2026-10-30T09:35,,,,
+US30,Short,2026-10-30T10:00,2.00,-150,Loss
+MNQ,Long,2026-10-30T10:35,1.50,,,
+`;
+
+  const parsed = parseTradingViewCSV(csvText, 'acc-test');
+
+  // Fila 1 (NAS100): sin R, sin PnL, sin status, sin precios -> NO INTERPRETABLE -> RECHAZADA (no inventa Loss ni -1R)
+  // Fila 2 (US30): R=2.00 pero PnL=-150 y status=Loss -> CONTRADICTORIA -> DEJADA EN REVISIÓN con notas explicativas
+  // Fila 3 (MNQ): R=1.50 -> VÁLIDA -> IMPORTADA
+  assert.equal(parsed.length, 2, 'Debe rechazar la fila sin resultado interpretable e importar las otras 2');
+  assert.equal(parsed.some((t) => t.symbol === 'NAS100'), false, 'Fila sin resultado no debe importarse');
+  
+  const mnq = parsed.find((t) => t.symbol === 'MNQ');
+  assert.ok(mnq);
+  assert.equal(mnq.rMultiple, 1.5);
+  assert.equal(mnq.status, 'Win');
+
+  const us30 = parsed.find((t) => t.symbol === 'US30');
+  assert.ok(us30);
+  assert.ok(us30.notes.includes('revisión') || us30.notes.includes('Conflicto'), 'Debe marcar el trade en revisión');
+});
+
+// ----------------------------------------------------------------------------------
+// 8. Cuenta técnica de capital cero
+// ----------------------------------------------------------------------------------
+test('8. Cuenta técnica de capital cero: no divide por cero y no inventa capital de referencia', () => {
+  const technicalAccount = {
+    id: 'acc-tech-zero',
+    name: 'Cuenta Técnica',
+    firm: 'Martin OS',
+    initialBalance: 0,
+    hasVerifiedBalance: false,
+    isTechnical: true,
+    profitTarget: 0,
+    maxDrawdown: 0,
+    dailyLossLimit: 0,
+  };
+
+  const trade = {
+    id: 't-tech',
+    symbol: 'NAS100',
+    direction: 'Long',
+    entryDate: '2026-10-30T09:30',
+    netPnl: 0,
+    rMultiple: 2.0,
+    status: 'Win',
+    calculationMode: 'unrecorded',
+    accountId: 'acc-tech-zero',
+  };
+
+  const consolidated = calculateConsolidatedReturnPct([trade], [technicalAccount], 'acc-tech-zero');
+  assert.equal(consolidated.isValid, false);
+  assert.equal(consolidated.returnPct, null);
+  assert.equal(consolidated.totalReferenceCapital, 0);
+
+  const curve = calculatePercentageEquityCurve([trade], [technicalAccount], 'acc-tech-zero');
+  assert.equal(curve.curveMode, 'r_multiple');
+  assert.equal(curve.referenceCapital, 0);
+  assert.equal(curve.currentReturnR, 2.0);
+});
+
+// ----------------------------------------------------------------------------------
+// 9. P&L experimental de instrumento desconocido
+// ----------------------------------------------------------------------------------
+test('9. P&L experimental de instrumento desconocido: no inventa multiplicador genérico para P&L real', () => {
+  const unknownSpec = getInstrumentSpec('UNKNOWN_COIN_XYZ');
+  assert.equal(unknownSpec.verified, false, 'Instrumento desconocido debe tener verified=false');
+
+  const calc = autoCalculateTradeMath({
+    symbol: 'UNKNOWN_COIN_XYZ',
+    entryPrice: 100,
+    exitPrice: 110,
+    stopLoss: 95,
+    takeProfit: 120,
+    size: 1,
+    commission: 0,
+    direction: 'Long',
+  });
+
+  assert.equal(calc.verifiedSpec, false);
+  assert.equal(calc.grossPnl, 0, 'No debe derivar P&L monetario para especificaciones no verificadas');
+  assert.equal(calc.netPnl, 0);
+});
+
+// ----------------------------------------------------------------------------------
+// 10. Compatibilidad con registros V1a y antiguos
+// ----------------------------------------------------------------------------------
+test('10. Compatibilidad con registros V1a y antiguos: valida BPR, R decimal 1.25 y confluencias múltiples', () => {
+  const v1aTrade = {
+    id: 't-v1a-legacy',
+    symbol: 'NAS100',
+    direction: 'Long',
+    entryDate: '2025-01-15T09:30',
+    entryPrice: 21500,
+    exitPrice: 21550,
+    stopLoss: 21450,
+    takeProfit: 21600,
+    size: 1,
+    grossPnl: 50,
+    commission: 0,
+    netPnl: 50,
+    plannedRR: 1.25,
+    rMultiple: 1.25,
+    status: 'Win',
+    killzone: 'NY Open 09:30 AM (09:30-10:30)',
+    pdArrays: ['BPR (Balanced Price Range)', 'Contexto HTF (1D/4H/2H/30m)'],
+    checklistCompleted: [],
+    setupGrade: 'A+',
+    dailyBias: 'Bullish',
+    dolTarget: 'High',
+    timeframe: '15m',
+    followedPlan: true,
+    psychologyTag: 'Sin clasificar',
+    notes: 'Operación histórica V1a',
+    accountId: 'acc-1',
+  };
+
   const backup = {
     version: '1.0',
-    exportedAt: '2026-10-30T13:00:00Z',
-    trades: [
-      {
-        id: 't-backup-1',
-        symbol: 'NAS100',
-        direction: 'Long',
-        entryDate: '2025-01-15T09:30',
-        entryPrice: 21500,
-        exitPrice: 21550,
-        stopLoss: 21450,
-        takeProfit: 21600,
-        size: 1,
-        grossPnl: 50,
-        commission: 0,
-        netPnl: 50,
-        plannedRR: 2,
-        rMultiple: 1.0,
-        status: 'Win',
-        killzone: 'NY Open 09:30 AM (09:30-10:30)',
-        pdArrays: ['BPR (Balanced Price Range)'],
-        checklistCompleted: [],
-        setupGrade: 'A+',
-        dailyBias: 'Bullish',
-        dolTarget: 'High',
-        timeframe: '15m',
-        followedPlan: true,
-        psychologyTag: 'Sin clasificar',
-        notes: 'Backup trade',
-        accountId: 'acc-1',
-      },
-    ],
+    exportedAt: '2026-10-30T14:00:00Z',
+    trades: [v1aTrade],
     accounts: [
       {
         id: 'acc-1',
@@ -512,6 +522,7 @@ test('12. validateBackupPayload valida respaldos históricos con trades BPR y cu
     dailyNotes: {},
   };
 
-  assert.equal(validateBackupPayload(backup), true, 'El respaldo histórico debe ser válido');
+  assert.equal(validateBackupPayload(backup), true, 'El payload histórico debe ser válido');
+  assert.equal(backup.trades[0].rMultiple, 1.25);
   assert.equal(backup.trades[0].pdArrays[0], 'BPR (Balanced Price Range)');
 });

@@ -185,7 +185,7 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
         ? 'Loss'
         : null;
 
-    // Check for contradictory signals
+    // Check for contradictory signals (e.g. positive R with negative PnL)
     const conflicts: string[] = [];
     if (!isNaN(explicitR) && !isNaN(explicitPnl)) {
       if (explicitR > 0 && explicitPnl < 0) {
@@ -202,13 +202,25 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
       }
     }
 
+    // Check if row has an interpretable financial result
+    const hasInterpretableOutcome =
+      (!isNaN(explicitPnl) && explicitPnl !== 0) ||
+      (!isNaN(explicitR) && explicitR !== 0) ||
+      (!isNaN(explicitReturnPct) && explicitReturnPct !== 0) ||
+      (explicitStatus !== null) ||
+      (hasPrices && calc.netPnl !== 0);
+
+    // Reject records without interpretable result (do NOT invent Loss or -1R)
+    if (!hasInterpretableOutcome) {
+      continue;
+    }
+
     // Consistent classification rule priority:
     // 1. Explicit PnL if non-zero
     // 2. Explicit R if non-zero
     // 3. Explicit Return % if non-zero
     // 4. Explicit Status
     // 5. Prices math
-    // 6. Default to Loss
     let status: 'Win' | 'Loss';
     if (!isNaN(explicitPnl) && explicitPnl !== 0) {
       status = explicitPnl > 0 ? 'Win' : 'Loss';
@@ -218,10 +230,8 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
       status = explicitReturnPct > 0 ? 'Win' : 'Loss';
     } else if (explicitStatus) {
       status = explicitStatus;
-    } else if (hasPrices && calc.netPnl !== 0) {
-      status = calc.netPnl > 0 ? 'Win' : 'Loss';
     } else {
-      status = 'Loss';
+      status = calc.netPnl > 0 ? 'Win' : 'Loss';
     }
 
     const finalR = !isNaN(explicitR)
