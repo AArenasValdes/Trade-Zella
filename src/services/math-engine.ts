@@ -15,6 +15,7 @@ import {
   calculateAvgLossReturnPct,
   calculateExpectancyReturnPct,
   calculatePercentageEquityCurve,
+  resolveTradeReturnPct,
 } from './financial-engine.ts';
 
 export function detectKillzoneFromTime(dateTimeStr: string): Killzone {
@@ -86,8 +87,8 @@ export function autoCalculateTradeMath(params: {
       ? Number((rewardPlannedPerUnit / riskPerUnit).toFixed(2))
       : 0;
 
-  const grossPnl = Number((priceDiff * multiplier * size).toFixed(2));
-  const netPnl = Number((grossPnl - commission).toFixed(2));
+  const grossPnl = spec.verified ? Number((priceDiff * multiplier * size).toFixed(2)) : 0;
+  const netPnl = spec.verified ? Number((grossPnl - commission).toFixed(2)) : 0;
 
   return {
     direction,
@@ -183,6 +184,12 @@ export function calculateDashboardMetrics(
         { metric: 'Contexto HTF', score: 0, fullMark: 100 },
         { metric: 'Risk Control', score: 0, fullMark: 100 },
       ],
+      expectancyUSD: null,
+      expectancyR: null,
+      profitFactorUSD: null,
+      profitFactorR: null,
+      monetarySampleSize: 0,
+      rSampleSize: 0,
       dataCoverage: {
         totalTrades: 0,
         monetaryTradesCount: 0,
@@ -208,6 +215,7 @@ export function calculateDashboardMetrics(
   );
   const monetaryWins = monetaryTrades.filter((t) => t.netPnl > 0);
   const monetaryLosses = monetaryTrades.filter((t) => t.netPnl < 0);
+  const monetarySampleSize = monetaryTrades.length;
 
   const netPnl = Number(monetaryTrades.reduce((acc, t) => acc + t.netPnl, 0).toFixed(2));
   const grossProfit = Number(monetaryWins.reduce((acc, t) => acc + t.netPnl, 0).toFixed(2));
@@ -218,38 +226,58 @@ export function calculateDashboardMetrics(
 
   const totalTrades = sorted.length;
   const winRate = totalTrades > 0 ? Number(((wins.length / totalTrades) * 100).toFixed(1)) : 0;
-  const lossRate = totalTrades > 0 ? losses.length / totalTrades : 0;
 
-  // Profit Factor: monetary profit factor if monetary trades exist; R-Multiple profit factor if purely R-based
-  let profitFactor = 0;
-  if (grossLoss > 0 || grossProfit > 0) {
-    profitFactor = grossLoss === 0 ? (grossProfit > 0 ? 10.0 : 0) : Number((grossProfit / grossLoss).toFixed(2));
-  } else {
-    const sumWinR = wins.reduce((acc, t) => acc + (t.rMultiple > 0 ? t.rMultiple : 0), 0);
-    const sumLossR = Math.abs(losses.reduce((acc, t) => acc + (t.rMultiple < 0 ? t.rMultiple : 0), 0));
-    profitFactor = sumLossR === 0 ? (sumWinR > 0 ? 10.0 : 0) : Number((sumWinR / sumLossR).toFixed(2));
+  // Profit Factor & Expectancy: calculated on strictly coherent populations!
+  let profitFactorUSD: number | null = null;
+  let expectancyUSD: number | null = null;
+  let avgWin = 0;
+  let avgLoss = 0;
+
+  if (monetarySampleSize > 0) {
+    avgWin = monetaryWins.length > 0 ? Number((grossProfit / monetaryWins.length).toFixed(2)) : 0;
+    avgLoss = monetaryLosses.length > 0 ? Number((grossLoss / monetaryLosses.length).toFixed(2)) : 0;
+    const monetaryWinRate = monetaryWins.length / monetarySampleSize;
+    const monetaryLossRate = monetaryLosses.length / monetarySampleSize;
+    expectancyUSD = Number(((monetaryWinRate * avgWin) - (monetaryLossRate * avgLoss)).toFixed(2));
+    profitFactorUSD = grossLoss === 0
+      ? (grossProfit > 0 ? null : 0)
+      : Number((grossProfit / grossLoss).toFixed(2));
   }
 
-  const avgWin = monetaryWins.length > 0 ? Number((grossProfit / monetaryWins.length).toFixed(2)) : 0;
-  const avgLoss = monetaryLosses.length > 0 ? Number((grossLoss / monetaryLosses.length).toFixed(2)) : 0;
+  // Population R
+  const rTrades = sorted.filter((t) => Number.isFinite(t.rMultiple));
+  const rSampleSize = rTrades.length;
+  let profitFactorR: number | null = null;
+  let expectancyR: number | null = null;
+  let avgRMultiple = 0;
+  let totalRMultiple = 0;
+
+  if (rSampleSize > 0) {
+    const rWins = rTrades.filter((t) => t.rMultiple > 0);
+    const rLosses = rTrades.filter((t) => t.rMultiple < 0);
+    const sumWinR = rWins.reduce((acc, t) => acc + t.rMultiple, 0);
+    const sumLossR = Math.abs(rLosses.reduce((acc, t) => acc + t.rMultiple, 0));
+    const avgWinR = rWins.length > 0 ? sumWinR / rWins.length : 0;
+    const avgLossR = rLosses.length > 0 ? sumLossR / rLosses.length : 0;
+    const rWinRate = rWins.length / rSampleSize;
+    const rLossRate = rLosses.length / rSampleSize;
+    expectancyR = Number(((rWinRate * avgWinR) - (rLossRate * avgLossR)).toFixed(2));
+    profitFactorR = sumLossR === 0
+      ? (sumWinR > 0 ? null : 0)
+      : Number((sumWinR / sumLossR).toFixed(2));
+    totalRMultiple = Number(rTrades.reduce((acc, t) => acc + t.rMultiple, 0).toFixed(2));
+    avgRMultiple = Number((totalRMultiple / rSampleSize).toFixed(2));
+  }
+
+  const profitFactor = profitFactorUSD !== null && profitFactorUSD !== undefined
+    ? profitFactorUSD
+    : (profitFactorR ?? 0);
+  const expectancy = expectancyUSD !== null && expectancyUSD !== undefined
+    ? expectancyUSD
+    : (expectancyR ?? 0);
+
   const winLossRatio =
     avgLoss === 0 ? (avgWin > 0 ? 5.0 : 0) : Number((avgWin / avgLoss).toFixed(2));
-
-  // Expectancy: monetary expectancy if monetary trades exist, else R expectancy
-  let expectancy = 0;
-  if (monetaryTrades.length > 0) {
-    expectancy = Number(((winRate / 100) * avgWin - lossRate * avgLoss).toFixed(2));
-  } else {
-    const avgWinR = wins.length > 0 ? wins.reduce((acc, t) => acc + (t.rMultiple > 0 ? t.rMultiple : 0), 0) / wins.length : 0;
-    const avgLossR = losses.length > 0 ? Math.abs(losses.reduce((acc, t) => acc + (t.rMultiple < 0 ? t.rMultiple : 0), 0)) / losses.length : 0;
-    expectancy = Number(((winRate / 100) * avgWinR - lossRate * avgLossR).toFixed(2));
-  }
-
-  const tradesWithR = sorted.filter((t) => Number.isFinite(t.rMultiple));
-  const avgRMultiple = tradesWithR.length > 0
-    ? Number((tradesWithR.reduce((acc, t) => acc + t.rMultiple, 0) / tradesWithR.length).toFixed(2))
-    : 0;
-  const totalRMultiple = Number(tradesWithR.reduce((acc, t) => acc + t.rMultiple, 0).toFixed(2));
 
   let peak = 0;
   let equity = 0;
@@ -324,7 +352,24 @@ export function calculateDashboardMetrics(
   const consolidated = calculateConsolidatedReturnPct(sorted, accounts, targetAccountId);
   const avgWinPct = calculateAvgWinReturnPct(wins, accounts, targetAccountId);
   const avgLossPct = calculateAvgLossReturnPct(losses, accounts, targetAccountId);
-  const expectancyPct = calculateExpectancyReturnPct(winRate, avgWinPct, avgLossPct);
+
+  // Compute pctWinRate solely on trades that have valid return percentage
+  const tradesWithPct = sorted.filter((t) => {
+    const acc = t.accountId ? accounts.find((a) => a.id === t.accountId) : undefined;
+    const r = resolveTradeReturnPct(t, acc?.initialBalance);
+    return r !== null && Number.isFinite(r);
+  });
+  let expectancyPct: number | null = null;
+  if (tradesWithPct.length > 0 && avgWinPct !== null && avgLossPct !== null) {
+    const pctWins = tradesWithPct.filter((t) => {
+      const acc = t.accountId ? accounts.find((a) => a.id === t.accountId) : undefined;
+      const r = resolveTradeReturnPct(t, acc?.initialBalance);
+      return (r ?? 0) > 0;
+    });
+    const pctWinRate = (pctWins.length / tradesWithPct.length) * 100;
+    expectancyPct = calculateExpectancyReturnPct(pctWinRate, avgWinPct, avgLossPct);
+  }
+
   const equityResult = calculatePercentageEquityCurve(sorted, accounts, targetAccountId);
 
   return {
@@ -345,6 +390,12 @@ export function calculateDashboardMetrics(
     winLossRatio,
     expectancy,
     expectancyPct,
+    expectancyUSD,
+    expectancyR,
+    profitFactorUSD,
+    profitFactorR,
+    monetarySampleSize,
+    rSampleSize,
     avgRMultiple,
     maxDrawdown: equityResult.curveMode === 'percentage' ? Number(maxDrawdown.toFixed(2)) : (equityResult.maxDrawdownR ?? 0),
     maxDrawdownPct: equityResult.maxDrawdownPct,

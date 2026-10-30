@@ -163,6 +163,12 @@ export interface DashboardMetrics {
   winLossRatio: number;
   expectancy: number;
   expectancyPct?: number | null;
+  profitFactorUSD?: number | null;
+  profitFactorR?: number | null;
+  expectancyUSD?: number | null;
+  expectancyR?: number | null;
+  monetarySampleSize?: number;
+  rSampleSize?: number;
   avgRMultiple: number;
   maxDrawdown: number;
   maxDrawdownPct?: number | null;

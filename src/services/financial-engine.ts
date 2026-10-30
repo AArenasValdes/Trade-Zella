@@ -59,6 +59,9 @@ export interface PercentageEquityCurveResult {
   worstTradeR?: number | null;
   referenceCapital: number;
   isValid: boolean;
+  isPartialCurve?: boolean;
+  includedTradesCount?: number;
+  totalTradesCount?: number;
 }
 
 export interface OperationalWindowReturnItem extends OperationalWindowStatItem {
@@ -398,6 +401,7 @@ export function calculatePercentageEquityCurve(
 
   if (!canBuildPercentageCurve) {
     // Mode: R-Multiple Cumulative Curve
+    const rTrades = sortedTrades.filter((t) => Number.isFinite(t.rMultiple));
     let cumulativeR = 0;
     let peakR = 0;
     let maxDrawdownR = 0;
@@ -410,7 +414,7 @@ export function calculatePercentageEquityCurve(
     points.push({
       tradeIndex: 0,
       tradeLabel: 'Inicio',
-      date: sortedTrades[0]?.entryDate ? sortedTrades[0].entryDate.slice(0, 10) : 'Inicio',
+      date: rTrades[0]?.entryDate ? rTrades[0].entryDate.slice(0, 10) : 'Inicio',
       time: '00:00',
       symbol: '',
       pnl: null,
@@ -424,9 +428,9 @@ export function calculatePercentageEquityCurve(
       drawdownR: 0,
     });
 
-    for (let i = 0; i < sortedTrades.length; i++) {
-      const t = sortedTrades[i];
-      const r = Number.isFinite(t.rMultiple) ? t.rMultiple : 0;
+    for (let i = 0; i < rTrades.length; i++) {
+      const t = rTrades[i];
+      const r = t.rMultiple;
       cumulativeR += r;
 
       if (cumulativeR > peakR) {
@@ -483,11 +487,19 @@ export function calculatePercentageEquityCurve(
       worstTradeReturnPct: null,
       worstTradeR,
       referenceCapital: 0,
-      isValid: sortedTrades.length > 0,
+      isValid: rTrades.length > 0,
+      isPartialCurve: sortedTrades.length > rTrades.length,
+      includedTradesCount: rTrades.length,
+      totalTradesCount: sortedTrades.length,
     };
   }
 
   // Mode: Percentage Equity Curve
+  // A monetary curve only includes trades with valid monetary information
+  const monetaryTradesInCurve = sortedTrades.filter(
+    (t) => t.calculationMode !== 'unrecorded' && Number.isFinite(t.netPnl)
+  );
+
   const referenceCapital = verifiedAccounts.reduce((sum, a) => sum + a.initialBalance, 0);
   let cumulativePnl = 0;
   let hasEstimatedInCumulative = false;
@@ -501,7 +513,7 @@ export function calculatePercentageEquityCurve(
   points.push({
     tradeIndex: 0,
     tradeLabel: 'Inicio',
-    date: sortedTrades[0]?.entryDate ? sortedTrades[0].entryDate.slice(0, 10) : 'Inicio',
+    date: monetaryTradesInCurve[0]?.entryDate ? monetaryTradesInCurve[0].entryDate.slice(0, 10) : 'Inicio',
     time: '00:00',
     symbol: '',
     pnl: 0,
@@ -514,8 +526,8 @@ export function calculatePercentageEquityCurve(
     drawdownPct: 0,
   });
 
-  for (let i = 0; i < sortedTrades.length; i++) {
-    const t = sortedTrades[i];
+  for (let i = 0; i < monetaryTradesInCurve.length; i++) {
+    const t = monetaryTradesInCurve[i];
     const isEstimated = t.calculationMode === 'derived_r';
     if (isEstimated) {
       hasEstimatedInCumulative = true;
@@ -583,7 +595,10 @@ export function calculatePercentageEquityCurve(
     bestTradeReturnPct: bestTradeReturnPct !== null ? Number(bestTradeReturnPct.toFixed(2)) : null,
     worstTradeReturnPct: worstTradeReturnPct !== null ? Number(worstTradeReturnPct.toFixed(2)) : null,
     referenceCapital,
-    isValid: true,
+    isValid: monetaryTradesInCurve.length > 0,
+    isPartialCurve: sortedTrades.length > monetaryTradesInCurve.length,
+    includedTradesCount: monetaryTradesInCurve.length,
+    totalTradesCount: sortedTrades.length,
   };
 }
 

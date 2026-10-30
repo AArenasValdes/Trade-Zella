@@ -222,11 +222,19 @@ export function DashboardView() {
               Profit Factor
             </span>
             <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${theme.badgeClass}`}>
-              W/L: {metrics.winLossRatio}
+              {metrics.profitFactorUSD !== undefined && metrics.profitFactorUSD !== null
+                ? `USD (n=${metrics.monetarySampleSize})`
+                : metrics.profitFactorR !== undefined && metrics.profitFactorR !== null
+                ? `R (n=${metrics.rSampleSize})`
+                : 'Sin datos'}
             </span>
           </div>
           <div className="text-2xl font-extrabold tracking-tight text-zinc-100 tabular-nums">
-            {metrics.profitFactor}
+            {metrics.profitFactorUSD !== undefined && metrics.profitFactorUSD !== null
+              ? metrics.profitFactorUSD
+              : metrics.profitFactorR !== undefined && metrics.profitFactorR !== null
+              ? metrics.profitFactorR
+              : 'N/A'}
           </div>
           <div className="mt-2.5 flex items-center justify-between text-xs tabular-nums">
             {metrics.grossProfit > 0 || metrics.grossLoss > 0 ? (
@@ -296,6 +304,11 @@ export function DashboardView() {
               <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${theme.badgeClass}`}>
                 {isRMode ? 'Métrica Independiente R' : '% sobre Capital'}
               </span>
+              {equityResult.isPartialCurve && (
+                <span className="text-[10px] px-2 py-0.5 rounded font-bold bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                  Curva Parcial ({equityResult.includedTradesCount}/{equityResult.totalTradesCount} ops)
+                </span>
+              )}
             </h2>
             <p className="text-xs text-zinc-500">
               {isRMode
