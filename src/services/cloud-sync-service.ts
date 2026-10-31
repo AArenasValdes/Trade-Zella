@@ -46,7 +46,7 @@ interface PlaybookRow {
   rules: string[];
 }
 
-interface TradeRow {
+export interface TradeRow {
   id: string;
   account_id: string;
   playbook_id: string | null;
@@ -87,6 +87,7 @@ interface TradeRow {
   r_unrecorded?: boolean | null;
   plan_unrecorded?: boolean | null;
   has_data_conflict?: boolean | null;
+  conflict_reasons?: string[] | null;
   realized_net_return_pct?: number | null;
   duration_minutes?: number | null;
 }
@@ -148,7 +149,7 @@ const PROVENANCE_VALUES: readonly PnlProvenance[] = [
 const cleanStringArray = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 
-function mapTrade(row: TradeRow, signedScreenshotUrl?: string): Trade {
+export function mapTrade(row: TradeRow, signedScreenshotUrl?: string): Trade {
   const calculationMode =
     row.calculation_mode === 'unrecorded'
       ? 'unrecorded'
@@ -214,6 +215,7 @@ function mapTrade(row: TradeRow, signedScreenshotUrl?: string): Trade {
     rUnrecorded: Boolean(row.r_unrecorded),
     planUnrecorded: Boolean(row.plan_unrecorded),
     hasDataConflict: Boolean(row.has_data_conflict),
+    conflictReasons: cleanStringArray(row.conflict_reasons),
     realizedNetReturnPct: row.realized_net_return_pct != null ? Number(row.realized_net_return_pct) : null,
     durationMinutes: row.duration_minutes != null ? Number(row.duration_minutes) : null,
   };
@@ -337,6 +339,7 @@ export function tradeToRow(trade: Trade, screenshotPath: string | null) {
     r_unrecorded: trade.rUnrecorded ?? false,
     plan_unrecorded: trade.planUnrecorded ?? false,
     has_data_conflict: trade.hasDataConflict ?? false,
+    conflict_reasons: trade.conflictReasons ?? [],
     realized_net_return_pct: trade.realizedNetReturnPct ?? null,
     duration_minutes: trade.durationMinutes ?? null,
   };

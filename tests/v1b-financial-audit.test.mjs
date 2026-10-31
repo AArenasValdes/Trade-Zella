@@ -5,7 +5,13 @@ import {
   calculateConsolidatedReturnPct,
   calculatePercentageEquityCurve,
   calculateAvgWinReturnPct,
+  isTradeIncludedInAggregates,
 } from '../src/services/financial-engine.ts';
+
+import {
+  tradeToRow,
+  mapTrade,
+} from '../src/services/cloud-sync-service.ts';
 
 import {
   calculateDashboardMetrics,
@@ -575,4 +581,274 @@ test('9. Compatibilidad con registros V1a y antiguos: conserva BPR, R decimal 1.
   };
 
   assert.equal(validateBackupPayload(backup), true);
+});
+
+// ----------------------------------------------------------------------------------
+// 10. Persistencia de conflictos: editar solo notas/emociones/duración en trade contradictorio preserva hasDataConflict y conflictReasons
+// ----------------------------------------------------------------------------------
+test('10. Persistencia de conflictos: editar campos no financieros conserva hasDataConflict y conflictReasons sin borrar la marca', () => {
+  const conflictingTrade = {
+    id: 't-conflict-1',
+    symbol: 'NQ',
+    direction: 'Long',
+    entryDate: '2026-10-31T09:30',
+    netPnl: -250.0,
+    grossPnl: -240.0,
+    commission: 10.0,
+    rMultiple: 2.0,
+    status: 'Win', // Inconsistente con netPnl negativo
+    calculationMode: 'monetary',
+    pnlProvenance: 'audited',
+    hasDataConflict: true,
+    conflictReasons: ['Resultado TP (Win) en conflicto con P&L monetario negativo (-$250.00)'],
+    accountId: 'acc-1',
+  };
+
+  const form = createInitialTradeFormState(conflictingTrade, '');
+  form.notes = 'Añadiendo una reflexión sobre la ejecución';
+  form.psychologyTag = 'FOMO (Perseguir Precio)';
+  form.durationMinutes = '45';
+
+  const res = resolveTradeFormSubmission(form, conflictingTrade, 'acc-1');
+
+  assert.equal(res.error, undefined);
+  assert.equal(res.payload.hasDataConflict, true, 'hasDataConflict debe mantenerse en true');
+  assert.deepEqual(
+    res.payload.conflictReasons,
+    ['Resultado TP (Win) en conflicto con P&L monetario negativo (-$250.00)'],
+    'conflictReasons debe preservarse íntegramente'
+  );
+  assert.equal(res.payload.notes, 'Añadiendo una reflexión sobre la ejecución');
+  assert.equal(res.payload.psychologyTag, 'FOMO (Perseguir Precio)');
+  assert.equal(res.payload.durationMinutes, 45);
+  // Cifras financieras intactas
+  assert.equal(res.payload.netPnl, -250.0);
+  assert.equal(res.payload.status, 'Win');
+  assert.equal(isTradeIncludedInAggregates(res.payload), false, 'Trade con conflicto sigue excluido de agregados');
+});
+
+// ----------------------------------------------------------------------------------
+// 11. Coherencia TP -> SL sin ingresar precios: preserva P&L monetario auditado, marca conflicto y excluye de agregados
+// ----------------------------------------------------------------------------------
+test('11. Transición TP -> SL en trade auditado sin nuevos precios: preserva netPnl positivo, marca hasDataConflict=true y excluye de agregados', () => {
+  const auditedWinTrade = {
+    id: 't-audited-win-1',
+    symbol: 'NQ',
+    direction: 'Long',
+    entryDate: '2026-10-25T09:30',
+    entryPrice: 21500,
+    exitPrice: 21550,
+    stopLoss: 21450,
+    takeProfit: 21550,
+    size: 1,
+    grossPnl: 1000.0,
+    commission: 15.0,
+    commissionUnmeasured: false,
+    netPnl: 985.0,
+    plannedRR: 2.0,
+    rMultiple: 2.0,
+    status: 'Win',
+    calculationMode: 'monetary',
+    pnlProvenance: 'audited',
+    accountId: 'acc-1',
+  };
+
+  const form = createInitialTradeFormState(auditedWinTrade, '');
+  // El usuario cambia outcomeMode a SL sin modificar precios de ejecución
+  form.outcomeMode = 'SL';
+
+  const res = resolveTradeFormSubmission(form, auditedWinTrade, 'acc-1');
+
+  assert.equal(res.error, undefined);
+  // P&L monetario auditado preservado sin sobrescritura silenciosa
+  assert.equal(res.payload.netPnl, 985.0, 'netPnl auditado debe mantenerse intacto sin sobrescritura silenciosa');
+  assert.equal(res.payload.grossPnl, 1000.0);
+  assert.equal(res.payload.commission, 15.0);
+  assert.equal(res.payload.status, 'Loss');
+  assert.equal(res.payload.rMultiple, -2.0);
+  // Debe detectar el conflicto entre status 'Loss' y netPnl > 0
+  assert.equal(res.payload.hasDataConflict, true, 'hasDataConflict debe ser true');
+  assert.ok(
+    res.payload.conflictReasons?.some((r) => r.includes('Loss') && r.includes('positivo')),
+    'Debe registrar la razón del conflicto entre Loss y netPnl positivo'
+  );
+  // Excluido de agregados
+  assert.equal(isTradeIncludedInAggregates(res.payload), false);
+
+  // Verificación de impacto en métricas del dashboard: el trade en conflicto no contamina
+  const accounts = [{ id: 'acc-1', name: 'Cuenta 10K', initialBalance: 10000, hasVerifiedBalance: true }];
+  const metrics = calculateDashboardMetrics([res.payload], accounts, 'acc-1');
+  assert.equal(metrics.totalTrades, 0, 'Trade con conflicto debe ser excluido de totalTrades');
+  assert.equal(metrics.netPnl, 0);
+});
+
+// ----------------------------------------------------------------------------------
+// 12. Coherencia SL -> TP sin ingresar precios: preserva P&L monetario negativo auditado, marca conflicto y excluye de agregados
+// ----------------------------------------------------------------------------------
+test('12. Transición SL -> TP en trade auditado sin nuevos precios: preserva netPnl negativo, marca hasDataConflict=true y excluye de agregados', () => {
+  const auditedLossTrade = {
+    id: 't-audited-loss-1',
+    symbol: 'NQ',
+    direction: 'Short',
+    entryDate: '2026-10-26T09:30',
+    entryPrice: 21500,
+    exitPrice: 21510,
+    stopLoss: 21510,
+    takeProfit: 21450,
+    size: 1,
+    grossPnl: -200.0,
+    commission: 10.0,
+    commissionUnmeasured: false,
+    netPnl: -210.0,
+    plannedRR: 2.0,
+    rMultiple: -1.0,
+    status: 'Loss',
+    calculationMode: 'monetary',
+    pnlProvenance: 'audited',
+    accountId: 'acc-1',
+  };
+
+  const form = createInitialTradeFormState(auditedLossTrade, '');
+  // El usuario cambia outcomeMode a TP sin modificar precios de ejecución
+  form.outcomeMode = 'TP';
+
+  const res = resolveTradeFormSubmission(form, auditedLossTrade, 'acc-1');
+
+  assert.equal(res.error, undefined);
+  // P&L monetario auditado preservado sin sobrescritura silenciosa
+  assert.equal(res.payload.netPnl, -210.0, 'netPnl negativo auditado debe mantenerse intacto');
+  assert.equal(res.payload.grossPnl, -200.0);
+  assert.equal(res.payload.commission, 10.0);
+  assert.equal(res.payload.status, 'Win');
+  assert.equal(res.payload.rMultiple, 1.0);
+  // Conflicto detectado entre status 'Win' y netPnl < 0
+  assert.equal(res.payload.hasDataConflict, true);
+  assert.ok(
+    res.payload.conflictReasons?.some((r) => r.includes('Win') && r.includes('negativo')),
+    'Debe registrar la razón del conflicto entre Win y netPnl negativo'
+  );
+  // Excluido de agregados
+  assert.equal(isTradeIncludedInAggregates(res.payload), false);
+});
+
+// ----------------------------------------------------------------------------------
+// 13. Resolución explícita y validada de conflicto: ingresar precios coherentes limpia hasDataConflict y conflictReasons
+// ----------------------------------------------------------------------------------
+test('13. Resolución validada de conflicto: ingresar precios de ejecución coherentes limpia hasDataConflict y rehabilita en agregados', () => {
+  const conflictingTrade = {
+    id: 't-resolving-1',
+    symbol: 'NQ',
+    direction: 'Long',
+    entryDate: '2026-10-27T09:30',
+    entryPrice: 21500,
+    exitPrice: 21550,
+    stopLoss: 21450,
+    takeProfit: 21550,
+    size: 1,
+    grossPnl: 1000.0,
+    commission: 15.0,
+    netPnl: 985.0,
+    plannedRR: 2.0,
+    rMultiple: 2.0,
+    status: 'Loss', // Conflicto previo
+    hasDataConflict: true,
+    conflictReasons: ['Resultado SL (Loss) en conflicto con P&L monetario positivo (+$985.00)'],
+    accountId: 'acc-1',
+  };
+
+  const form = createInitialTradeFormState(conflictingTrade, '');
+  // El usuario corrige los precios para que correspondan a una pérdida real (SL en Long: entrada 21500, salida 21450)
+  form.entryPrice = '21500';
+  form.exitPrice = '21450';
+  form.outcomeMode = 'SL';
+  form.rMultiple = '1';
+
+  const res = resolveTradeFormSubmission(form, conflictingTrade, 'acc-1');
+
+  assert.equal(res.error, undefined);
+  assert.equal(res.payload.hasDataConflict, false, 'hasDataConflict debe resolverse a false');
+  assert.equal(res.payload.conflictReasons, undefined, 'conflictReasons debe quedar undefined');
+  assert.equal(res.payload.status, 'Loss');
+  assert.equal(res.payload.rMultiple, -1.0);
+  assert.ok(res.payload.netPnl < 0, 'P&L recalculado debe ser negativo');
+  assert.equal(isTradeIncludedInAggregates(res.payload), true, 'Trade corregido debe reincorporarse a agregados');
+});
+
+// ----------------------------------------------------------------------------------
+// 14. Round-trip completo de conflict_reasons y has_data_conflict en serialización Supabase
+// ----------------------------------------------------------------------------------
+test('14. Round-trip de has_data_conflict y conflict_reasons en serialización/deserialización con Supabase (tradeToRow y mapTrade)', () => {
+  const tradeWithConflict = {
+    id: 't-sync-conflict',
+    accountId: 'acc-1',
+    playbookId: undefined,
+    symbol: 'NQ',
+    direction: 'Long',
+    entryDate: '2026-10-31T09:30',
+    entryPrice: 21500,
+    exitPrice: 21550,
+    stopLoss: 21450,
+    takeProfit: 21550,
+    size: 1,
+    grossPnl: 1000,
+    commission: 15,
+    netPnl: 985,
+    plannedRR: 2.0,
+    rMultiple: -2.0,
+    status: 'Loss',
+    killzone: 'NY Open 09:30 AM (09:30-10:30)',
+    pdArrays: ['FVG (Fair Value Gap)'],
+    checklistCompleted: [],
+    setupGrade: 'A+',
+    dailyBias: 'Bullish',
+    dolTarget: 'High 1D',
+    timeframe: '5m',
+    followedPlan: true,
+    psychologyTag: 'Sin clasificar',
+    timePrecision: 'exact',
+    operationalWindow: 'window_1',
+    calculationMode: 'monetary',
+    pnlProvenance: 'audited',
+    hasDataConflict: true,
+    conflictReasons: [
+      'Resultado SL (Loss) en conflicto con P&L monetario positivo (+$985.00)',
+      'R-Multiple negativo (-2.00R) en conflicto con P&L monetario positivo (+$985.00)',
+    ],
+  };
+
+  // Serializar para Supabase
+  const row = tradeToRow(tradeWithConflict, null);
+
+  assert.equal(row.has_data_conflict, true);
+  assert.deepEqual(row.conflict_reasons, [
+    'Resultado SL (Loss) en conflicto con P&L monetario positivo (+$985.00)',
+    'R-Multiple negativo (-2.00R) en conflicto con P&L monetario positivo (+$985.00)',
+  ]);
+
+  // Simulación de transporte JSON / DB round-trip
+  const dbPayload = JSON.parse(JSON.stringify(row));
+
+  // Deserializar con mapTrade
+  const mapped = mapTrade(dbPayload);
+
+  assert.equal(mapped.hasDataConflict, true);
+  assert.deepEqual(mapped.conflictReasons, [
+    'Resultado SL (Loss) en conflicto con P&L monetario positivo (+$985.00)',
+    'R-Multiple negativo (-2.00R) en conflicto con P&L monetario positivo (+$985.00)',
+  ]);
+
+  // Caso trade sin conflictos
+  const cleanTrade = {
+    ...tradeWithConflict,
+    id: 't-sync-clean',
+    hasDataConflict: false,
+    conflictReasons: undefined,
+  };
+  const cleanRow = tradeToRow(cleanTrade, null);
+  assert.equal(cleanRow.has_data_conflict, false);
+  assert.deepEqual(cleanRow.conflict_reasons, []);
+
+  const cleanMapped = mapTrade(JSON.parse(JSON.stringify(cleanRow)));
+  assert.equal(cleanMapped.hasDataConflict, false);
+  assert.deepEqual(cleanMapped.conflictReasons, []);
 });

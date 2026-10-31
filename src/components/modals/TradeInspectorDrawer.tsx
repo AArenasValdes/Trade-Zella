@@ -54,11 +54,20 @@ export function TradeInspectorDrawer({
         >
           <div className="space-y-5">
             {trade.hasDataConflict && (
-              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-300 flex items-center gap-2 font-semibold">
-                <AlertTriangle className="w-4 h-4 shrink-0" />
-                <span>
-                  Registro con conflicto de datos — excluido de agregados estadísticos hasta su revisión.
-                </span>
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-300 space-y-1 font-semibold">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>
+                    Registro con conflicto de datos — excluido de agregados estadísticos hasta su revisión.
+                  </span>
+                </div>
+                {trade.conflictReasons && trade.conflictReasons.length > 0 && (
+                  <ul className="list-disc list-inside text-[11px] text-amber-200/90 pl-6 font-normal space-y-0.5">
+                    {trade.conflictReasons.map((reason, idx) => (
+                      <li key={idx}>{reason}</li>
+                    ))}
+                  </ul>
+                )}
               </div>
             )}
 

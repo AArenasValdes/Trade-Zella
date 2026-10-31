@@ -32,6 +32,9 @@ alter table public.trades
   add column if not exists has_data_conflict boolean not null default false;
 
 alter table public.trades
+  add column if not exists conflict_reasons text[] default '{}'::text[];
+
+alter table public.trades
   add column if not exists pnl_provenance text default null;
 
 alter table public.trades

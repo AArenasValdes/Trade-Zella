@@ -3,6 +3,8 @@ import type {
   PropAccount,
   DataCoverageInfo,
   ReturnBase,
+  TradeStatus,
+  CalculationMode,
 } from '../types/trading.ts';
 import { calculateOperationalWindowStats } from './date-time-service.ts';
 import type {
@@ -107,6 +109,85 @@ export function hasValidRMultiple(
 ): boolean {
   if (trade.hasDataConflict || trade.rUnrecorded) return false;
   return Number.isFinite(trade.rMultiple);
+}
+
+/**
+ * Detects financial and status contradictions across R-Multiple, Net P&L, Return %, and Status.
+ */
+export function detectTradeDataConflicts(params: {
+  status: TradeStatus;
+  rMultiple: number;
+  rUnrecorded?: boolean;
+  netPnl: number;
+  calculationMode?: CalculationMode;
+  realizedNetReturnPct?: number | null;
+}): string[] {
+  const conflicts: string[] = [];
+  const { status, rMultiple, rUnrecorded, netPnl, calculationMode, realizedNetReturnPct } = params;
+
+  const hasMonetaryPnl = calculationMode !== 'unrecorded' && Number.isFinite(netPnl) && netPnl !== 0;
+  const hasValidR = !rUnrecorded && Number.isFinite(rMultiple) && rMultiple !== 0;
+  const hasValidPct =
+    realizedNetReturnPct !== null &&
+    realizedNetReturnPct !== undefined &&
+    Number.isFinite(realizedNetReturnPct) &&
+    realizedNetReturnPct !== 0;
+
+  // 1. Status vs Net PnL (for monetary and derived_r trades)
+  if (hasMonetaryPnl) {
+    if (status === 'Win' && netPnl < 0) {
+      conflicts.push(`Resultado TP (Win) en conflicto con P&L monetario negativo (-$${Math.abs(netPnl).toFixed(2)})`);
+    } else if (status === 'Loss' && netPnl > 0) {
+      conflicts.push(`Resultado SL (Loss) en conflicto con P&L monetario positivo (+$${netPnl.toFixed(2)})`);
+    }
+  }
+
+  // 2. Status vs R-Multiple
+  if (hasValidR) {
+    if (status === 'Win' && rMultiple < 0) {
+      conflicts.push(`Resultado TP (Win) en conflicto con R negativo (${rMultiple.toFixed(2)}R)`);
+    } else if (status === 'Loss' && rMultiple > 0) {
+      conflicts.push(`Resultado SL (Loss) en conflicto con R positivo (+${rMultiple.toFixed(2)}R)`);
+    }
+  }
+
+  // 3. Status vs Realized Return %
+  if (hasValidPct) {
+    if (status === 'Win' && realizedNetReturnPct < 0) {
+      conflicts.push(`Resultado TP (Win) en conflicto con retorno % negativo (${realizedNetReturnPct.toFixed(2)}%)`);
+    } else if (status === 'Loss' && realizedNetReturnPct > 0) {
+      conflicts.push(`Resultado SL (Loss) en conflicto con retorno % positivo (+${realizedNetReturnPct.toFixed(2)}%)`);
+    }
+  }
+
+  // 4. Net PnL vs Realized Return %
+  if (hasMonetaryPnl && hasValidPct) {
+    if (netPnl > 0 && realizedNetReturnPct < 0) {
+      conflicts.push(`PnL monetario positivo en conflicto con retorno % negativo (${realizedNetReturnPct.toFixed(2)}%)`);
+    } else if (netPnl < 0 && realizedNetReturnPct > 0) {
+      conflicts.push(`PnL monetario negativo en conflicto con retorno % positivo (+${realizedNetReturnPct.toFixed(2)}%)`);
+    }
+  }
+
+  // 5. R-Multiple vs Net PnL
+  if (hasValidR && hasMonetaryPnl) {
+    if (rMultiple > 0 && netPnl < 0) {
+      conflicts.push(`R positivo (+${rMultiple.toFixed(2)}R) en conflicto con P&L monetario negativo (-$${Math.abs(netPnl).toFixed(2)})`);
+    } else if (rMultiple < 0 && netPnl > 0) {
+      conflicts.push(`R negativo (${rMultiple.toFixed(2)}R) en conflicto con P&L monetario positivo (+$${netPnl.toFixed(2)})`);
+    }
+  }
+
+  // 6. R-Multiple vs Realized Return %
+  if (hasValidR && hasValidPct) {
+    if (rMultiple > 0 && realizedNetReturnPct < 0) {
+      conflicts.push(`R positivo (+${rMultiple.toFixed(2)}R) en conflicto con retorno % negativo (${realizedNetReturnPct.toFixed(2)}%)`);
+    } else if (rMultiple < 0 && realizedNetReturnPct > 0) {
+      conflicts.push(`R negativo (${rMultiple.toFixed(2)}R) en conflicto con retorno % positivo (+${realizedNetReturnPct.toFixed(2)}%)`);
+    }
+  }
+
+  return conflicts;
 }
 
 /**

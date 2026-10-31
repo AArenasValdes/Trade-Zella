@@ -11,6 +11,9 @@ import {
   classifyOperationalTimeWindow,
 } from './date-time-service.ts';
 import { calculateTheoreticalInstrumentPnl } from './math-engine.ts';
+import { detectTradeDataConflicts } from './financial-engine.ts';
+
+export { detectTradeDataConflicts };
 
 export interface TradeFormState {
   dateKey: string;
@@ -418,6 +421,35 @@ export function resolveTradeFormSubmission(
     finalPdArrays = [form.selectedModel];
   }
 
+  const finalStatus: 'Win' | 'Loss' = form.outcomeMode === 'TP' ? 'Win' : 'Loss';
+
+  let finalHasDataConflict = false;
+  let finalConflictReasons: string[] | undefined = undefined;
+
+  if (editingTrade && !isFinancialChange) {
+    // Preserve existing conflict state when editing only non-financial fields (notes, emotions, duration, screenshot)
+    finalHasDataConflict = Boolean(editingTrade.hasDataConflict);
+    finalConflictReasons = editingTrade.conflictReasons;
+  } else {
+    // Detect financial contradictions across status, R, P&L and return %
+    const detectedConflicts = detectTradeDataConflicts({
+      status: finalStatus,
+      rMultiple: finalR,
+      rUnrecorded: finalRUnrecorded,
+      netPnl: finalNetPnl,
+      calculationMode: finalCalculationMode,
+      realizedNetReturnPct: finalRealizedReturnPct,
+    });
+
+    if (detectedConflicts.length > 0) {
+      finalHasDataConflict = true;
+      finalConflictReasons = detectedConflicts;
+    } else {
+      finalHasDataConflict = false;
+      finalConflictReasons = undefined;
+    }
+  }
+
   // Correction 6: Do NOT invent fictitious legacy data (riskPercentUsed: 1.0, htfAligned: 4 TFs, followedPlan: true)
   // on new trades. Preserve existing historical values when editing.
   const payload: Omit<Trade, 'id'> = {
@@ -443,7 +475,7 @@ export function resolveTradeFormSubmission(
     rUnrecorded: finalRUnrecorded,
     realizedNetReturnPct: finalRealizedReturnPct,
     durationMinutes: finalDurationMinutes,
-    status: form.outcomeMode === 'TP' ? 'Win' : 'Loss',
+    status: finalStatus,
     killzone:
       form.selectedWindow === 'window_1'
         ? 'NY Open 09:30 AM (09:30-10:30)'
@@ -464,7 +496,8 @@ export function resolveTradeFormSubmission(
     accountId: resolvedAccountId,
     calculationMode: finalCalculationMode,
     pnlProvenance: finalPnlProvenance,
-    hasDataConflict: false,
+    hasDataConflict: finalHasDataConflict,
+    conflictReasons: finalConflictReasons,
   };
 
   return {
