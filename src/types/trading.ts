@@ -20,6 +20,8 @@ export type PDArray =
 
 export type TimePrecision = 'exact' | 'window';
 export type CalculationMode = 'monetary' | 'derived_r' | 'unrecorded';
+export type PnlProvenance = 'audited' | 'theoretical' | 'derived_r' | 'unrecorded';
+export type ReturnBase = 'constant_initial_capital' | 'r_multiple_only' | 'insufficient_data';
 
 export type PsychologyTag =
   | 'A+ Alineado al Contexto HTF'
@@ -120,8 +122,13 @@ export interface Trade {
   timePrecision?: TimePrecision;
   operationalWindow?: 'window_1' | 'window_2' | 'outside';
   calculationMode?: CalculationMode;
+  pnlProvenance?: PnlProvenance;
   commissionUnmeasured?: boolean;
   pricesUnrecorded?: boolean;
+  rUnrecorded?: boolean;
+  planUnrecorded?: boolean;
+  hasDataConflict?: boolean;
+  conflictReasons?: string[];
   realizedNetReturnPct?: number | null;
   durationMinutes?: number | null;
 }
@@ -142,12 +149,20 @@ export interface DataCoverageInfo {
   monetaryTradesCount: number;
   returnPctTradesCount: number;
   unrecordedTradesCount: number;
+  rMultipleTradesCount?: number;
+  unrecordedRTradesCount?: number;
+  conflictedTradesCount?: number;
+  includedTradesCount?: number;
+  excludedTradesCount?: number;
+  isPartialCoverage?: boolean;
   hasVerifiedReferenceCapital: boolean;
 }
 
 export interface DashboardMetrics {
   netPnl: number;
   netReturnPct?: number | null;
+  returnBase?: ReturnBase;
+  isPartialReturn?: boolean;
   grossProfit: number;
   grossLoss: number;
   totalCommissions: number;

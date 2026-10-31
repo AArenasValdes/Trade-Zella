@@ -14,10 +14,10 @@ import {
   getInstrumentSpec,
 } from '@/config/ict-constants';
 import {
-  extractNyDateKey,
-  getCurrentNyDateKey,
-  classifyOperationalTimeWindow,
-} from '@/services/date-time-service';
+  TradeFormState,
+  createInitialTradeFormState,
+  resolveTradeFormSubmission,
+} from '@/services/trade-form-service';
 import {
   X,
   ClipboardPaste,
@@ -26,34 +26,15 @@ import {
   ChevronUp,
 } from 'lucide-react';
 
+export { createInitialTradeFormState, resolveTradeFormSubmission };
+export type { TradeFormState };
+
 interface TradeFormModalProps {
   isOpen: boolean;
   onClose: () => void;
   editingTrade: Trade | null;
   initialEntryDate: string;
   prefillData?: Partial<Trade> | null;
-}
-
-interface TradeFormState {
-  dateKey: string;
-  symbol: string;
-  direction: TradeDirection | '';
-  selectedWindow: 'window_1' | 'window_2';
-  outcomeMode: 'TP' | 'SL';
-  rMultiple: string;
-  realizedNetReturnPct: string;
-  durationMinutes: string;
-  selectedModel: PDArray;
-  psychologyTag: PsychologyTag;
-  tradingViewUrl: string;
-  screenshotDataUrl: string;
-  notes: string;
-  // Optional experimental prices
-  entryPrice: string;
-  stopLoss: string;
-  takeProfit: string;
-  exitPrice: string;
-  size: string;
 }
 
 export function TradeFormModal({ isOpen, ...props }: TradeFormModalProps) {
@@ -86,88 +67,9 @@ function TradeFormModalContent({
     Boolean(editingTrade && (editingTrade.entryPrice > 0 || editingTrade.exitPrice > 0))
   );
 
-  const initialDateKey = editingTrade
-    ? extractNyDateKey(editingTrade.entryDate) || editingTrade.entryDate.slice(0, 10)
-    : extractNyDateKey(initialEntryDate) || initialEntryDate.slice(0, 10) || getCurrentNyDateKey();
-
-  // Initial window determination
-  const initialWindow: 'window_1' | 'window_2' = editingTrade?.operationalWindow
-    ? editingTrade.operationalWindow === 'window_2'
-      ? 'window_2'
-      : 'window_1'
-    : editingTrade
-    ? classifyOperationalTimeWindow(editingTrade.entryDate) === 'window_2'
-      ? 'window_2'
-      : 'window_1'
-    : 'window_1';
-
-  // Determine initial model (preserving historical models if editing)
-  const initialModel: PDArray = (() => {
-    if (editingTrade?.pdArrays && editingTrade.pdArrays.length > 0) {
-      return editingTrade.pdArrays[0];
-    }
-    return 'Breaker Block';
-  })();
-
-  const [form, setForm] = useState<TradeFormState>(() => {
-    if (editingTrade) {
-      return {
-        dateKey: initialDateKey,
-        symbol: editingTrade.symbol,
-        direction: editingTrade.direction,
-        selectedWindow: initialWindow,
-        outcomeMode: editingTrade.status === 'Win' ? 'TP' : 'SL',
-        rMultiple: (() => {
-          const val = Math.abs(editingTrade.rMultiple);
-          if (Number.isFinite(val)) {
-            return Number(val.toFixed(2)).toString();
-          }
-          const fallback = Number(editingTrade.plannedRR);
-          if (Number.isFinite(fallback)) {
-            return Number(fallback.toFixed(2)).toString();
-          }
-          return '2.0';
-        })(),
-        realizedNetReturnPct: editingTrade.realizedNetReturnPct !== null && editingTrade.realizedNetReturnPct !== undefined
-          ? Math.abs(editingTrade.realizedNetReturnPct).toString()
-          : '',
-        durationMinutes: editingTrade.durationMinutes !== null && editingTrade.durationMinutes !== undefined
-          ? editingTrade.durationMinutes.toString()
-          : '',
-        selectedModel: initialModel,
-        psychologyTag: editingTrade.psychologyTag,
-        tradingViewUrl: editingTrade.tradingViewUrl || '',
-        screenshotDataUrl: editingTrade.screenshotDataUrl || '',
-        notes: editingTrade.notes || '',
-        entryPrice: editingTrade.entryPrice > 0 ? editingTrade.entryPrice.toString() : '',
-        stopLoss: editingTrade.stopLoss > 0 ? editingTrade.stopLoss.toString() : '',
-        takeProfit: editingTrade.takeProfit > 0 ? editingTrade.takeProfit.toString() : '',
-        exitPrice: editingTrade.exitPrice > 0 ? editingTrade.exitPrice.toString() : '',
-        size: editingTrade.size > 0 ? editingTrade.size.toString() : '1',
-      };
-    }
-
-    return {
-      dateKey: initialDateKey,
-      symbol: prefillData?.symbol || 'NAS100',
-      direction: prefillData?.direction || '',
-      selectedWindow: 'window_1',
-      outcomeMode: 'TP',
-      rMultiple: '2.0',
-      realizedNetReturnPct: '',
-      durationMinutes: '',
-      selectedModel: 'Breaker Block',
-      psychologyTag: 'Sin clasificar',
-      tradingViewUrl: '',
-      screenshotDataUrl: '',
-      notes: '',
-      entryPrice: '',
-      stopLoss: '',
-      takeProfit: '',
-      exitPrice: '',
-      size: '1',
-    };
-  });
+  const [form, setForm] = useState<TradeFormState>(() =>
+    createInitialTradeFormState(editingTrade, initialEntryDate, prefillData)
+  );
 
   // Available models for selection: Breaker Block, Key Level, plus historical model if editing
   const availableModels: PDArray[] = ['Breaker Block', 'Key Level'];
@@ -178,11 +80,6 @@ function TradeFormModalContent({
       }
     }
   }
-
-  const normalizedRMultiple = form.rMultiple.trim().replace(',', '.');
-  const parsedRMultiple = Number(normalizedRMultiple);
-  const rMultipleNum = Number.isFinite(parsedRMultiple) ? parsedRMultiple : 0;
-  const signedR = form.outcomeMode === 'TP' ? Math.abs(rMultipleNum) : -Math.abs(rMultipleNum);
 
   const instrumentSpec = getInstrumentSpec(form.symbol);
 
@@ -243,216 +140,16 @@ function TradeFormModalContent({
       }
     }
 
-    if (!form.direction) {
-      setFormError('Selecciona la dirección de la operación (Long o Short).');
+    const resolution = resolveTradeFormSubmission(form, editingTrade, resolvedAccountId);
+    if (resolution.error || !resolution.payload) {
+      setFormError(resolution.error || 'Error al validar los datos de la operación.');
       return;
     }
-
-    const isUnchangedHistoricalZero = Boolean(
-      editingTrade &&
-      Number(Math.abs(editingTrade.rMultiple).toFixed(2)) === 0 &&
-      rMultipleNum === 0
-    );
-
-    if (!/^\d+(?:[.,]\d{1,2})?$/.test(form.rMultiple.trim()) || !Number.isFinite(rMultipleNum) || (rMultipleNum <= 0 && !isUnchangedHistoricalZero)) {
-      setFormError('Ingresa un R-Multiple positivo con hasta dos decimales (ej: 1,25 o 2.50).');
-      return;
-    }
-
-    // Validate optional realized return pct
-    let finalRealizedReturnPct: number | null = null;
-    if (form.realizedNetReturnPct.trim() !== '') {
-      const cleanPctStr = form.realizedNetReturnPct.trim().replace(',', '.');
-      const numPct = Number(cleanPctStr);
-      if (!Number.isFinite(numPct) || !/^\d+(?:[.,]\d{1,4})?$/.test(form.realizedNetReturnPct.trim())) {
-        setFormError('La rentabilidad neta % opcional debe ser un número válido positivo (ej: 1.5 o 2,25).');
-        return;
-      }
-      finalRealizedReturnPct = form.outcomeMode === 'SL' ? -Math.abs(numPct) : Math.abs(numPct);
-    }
-
-    // Validate duration: strictly accept integer minutes and reject decimal values
-    let finalDurationMinutes: number | null = null;
-    if (form.durationMinutes.trim() !== '') {
-      const durStr = form.durationMinutes.trim();
-      if (!/^\d+$/.test(durStr)) {
-        setFormError('La duración debe ser un número entero de minutos sin decimales (ej: 15).');
-        return;
-      }
-      finalDurationMinutes = parseInt(durStr, 10);
-    }
-
-    // Determine timestamp without fabricating false precision
-    let finalEntryDate: string;
-    let finalTimePrecision: 'exact' | 'window';
-
-    if (editingTrade && editingTrade.timePrecision !== 'window' && form.selectedWindow === initialWindow && form.dateKey === initialDateKey) {
-      finalEntryDate = editingTrade.entryDate;
-      finalTimePrecision = 'exact';
-    } else {
-      const repTime = form.selectedWindow === 'window_1' ? '09:30:00' : '10:35:00';
-      finalEntryDate = `${form.dateKey}T${repTime}`;
-      finalTimePrecision = 'window';
-    }
-
-    // Parse form input numbers
-    const parsedEntry = parseFloat(form.entryPrice) || 0;
-    const parsedExit = parseFloat(form.exitPrice) || 0;
-    const parsedSL = parseFloat(form.stopLoss) || 0;
-    const parsedTP = parseFloat(form.takeProfit) || 0;
-    const parsedSize = parseFloat(form.size) || 1;
-
-    // Detect actual financial changes vs non-financial edits (notes, emotions, duration)
-    const isFinancialChange = Boolean(
-      editingTrade && (
-        form.symbol.trim().toUpperCase() !== editingTrade.symbol.trim().toUpperCase() ||
-        form.direction !== editingTrade.direction ||
-        (editingTrade.status === 'Win' ? 'TP' : 'SL') !== form.outcomeMode ||
-        Number(rMultipleNum.toFixed(2)) !== Number(editingTrade.rMultiple.toFixed(2)) ||
-        (finalRealizedReturnPct ?? null) !== (editingTrade.realizedNetReturnPct ?? null) ||
-        parsedEntry !== (editingTrade.entryPrice || 0) ||
-        parsedExit !== (editingTrade.exitPrice || 0) ||
-        parsedSL !== (editingTrade.stopLoss || 0) ||
-        parsedTP !== (editingTrade.takeProfit || 0) ||
-        parsedSize !== (editingTrade.size || 1)
-      )
-    );
-
-    let finalNetPnl = 0;
-    let finalGrossPnl = 0;
-    let finalCommission = 0;
-    let finalCommissionUnmeasured = true;
-    let finalCalculationMode: 'monetary' | 'derived_r' | 'unrecorded' = 'unrecorded';
-    let finalPricesUnrecorded = true;
-    let finalEntryPrice = 0;
-    let finalExitPrice = 0;
-    let finalSL = 0;
-    let finalTP = 0;
-    let finalSize = 1;
-    let finalR = Number(signedR.toFixed(2));
-    let finalPlannedRR = Number(Math.abs(rMultipleNum).toFixed(2));
-
-    if (editingTrade && !isFinancialChange) {
-      // PRESERVE HISTORICAL METRICS INTACT (editing only notes, duration, emotion, screenshots, etc.)
-      finalNetPnl = editingTrade.netPnl;
-      finalGrossPnl = editingTrade.grossPnl;
-      finalCommission = editingTrade.commission;
-      finalCommissionUnmeasured = Boolean(editingTrade.commissionUnmeasured);
-      finalCalculationMode = editingTrade.calculationMode || 'monetary';
-      finalPricesUnrecorded = Boolean(editingTrade.pricesUnrecorded);
-      finalEntryPrice = editingTrade.entryPrice;
-      finalExitPrice = editingTrade.exitPrice;
-      finalSL = editingTrade.stopLoss;
-      finalTP = editingTrade.takeProfit;
-      finalSize = editingTrade.size;
-      finalR = editingTrade.rMultiple;
-      finalPlannedRR = editingTrade.plannedRR;
-    } else {
-      // New trade or financial fields were explicitly altered
-      finalEntryPrice = parsedEntry;
-      finalExitPrice = parsedExit;
-      finalSL = parsedSL;
-      finalTP = parsedTP;
-      finalSize = parsedSize;
-      finalPricesUnrecorded = !(parsedEntry > 0 && parsedExit > 0);
-      finalR = isUnchangedHistoricalZero && editingTrade ? editingTrade.rMultiple : Number(signedR.toFixed(2));
-      finalPlannedRR = isUnchangedHistoricalZero && editingTrade ? editingTrade.plannedRR : Number(Math.abs(rMultipleNum).toFixed(2));
-
-      const hasEnteredPrices = parsedEntry > 0 && parsedExit > 0;
-
-      if (hasEnteredPrices) {
-        const spec = getInstrumentSpec(form.symbol);
-        if (spec.verified) {
-          finalCalculationMode = 'monetary';
-          const priceDiff = form.direction === 'Long' ? (parsedExit - parsedEntry) : (parsedEntry - parsedExit);
-          finalGrossPnl = Number((priceDiff * spec.pointValue * parsedSize).toFixed(2));
-          finalCommission = 0;
-          finalCommissionUnmeasured = true;
-          finalNetPnl = finalGrossPnl;
-        } else {
-          // Unverified spec: do NOT invent generic /pt multiplier as real P&L!
-          finalCalculationMode = 'unrecorded';
-          finalGrossPnl = 0;
-          finalNetPnl = 0;
-          finalCommission = 0;
-          finalCommissionUnmeasured = true;
-        }
-      } else if (editingTrade && editingTrade.calculationMode === 'derived_r') {
-        finalCalculationMode = 'derived_r';
-        finalNetPnl = editingTrade.netPnl;
-        finalGrossPnl = editingTrade.grossPnl;
-        finalCommission = editingTrade.commission;
-        finalCommissionUnmeasured = Boolean(editingTrade.commissionUnmeasured);
-      } else {
-        finalCalculationMode = 'unrecorded';
-        finalGrossPnl = 0;
-        finalNetPnl = 0;
-        finalCommission = 0;
-        finalCommissionUnmeasured = true;
-      }
-    }
-
-    // Preserve historic pdArrays elements if editing
-    let finalPdArrays: PDArray[];
-    if (editingTrade?.pdArrays && editingTrade.pdArrays.length > 0) {
-      if (editingTrade.pdArrays.includes(form.selectedModel)) {
-        finalPdArrays = editingTrade.pdArrays;
-      } else {
-        // User changed primary model: set as first element while preserving other confluences
-        const otherConfluences = editingTrade.pdArrays.slice(1);
-        finalPdArrays = [form.selectedModel, ...otherConfluences];
-      }
-    } else {
-      finalPdArrays = [form.selectedModel];
-    }
-
-    const payload: Omit<Trade, 'id'> = {
-      symbol: form.symbol.toUpperCase(),
-      direction: form.direction as TradeDirection,
-      entryDate: finalEntryDate,
-      timePrecision: finalTimePrecision,
-      operationalWindow: form.selectedWindow,
-      entryPrice: finalEntryPrice,
-      exitPrice: finalExitPrice,
-      stopLoss: finalSL,
-      takeProfit: finalTP,
-      size: finalSize,
-      pricesUnrecorded: finalPricesUnrecorded,
-      riskPercentUsed: editingTrade?.riskPercentUsed || 1.0,
-      htfAligned: editingTrade?.htfAligned || ['1D', '4H', '2H', '30m'],
-      grossPnl: finalGrossPnl,
-      commission: finalCommission,
-      commissionUnmeasured: finalCommissionUnmeasured,
-      netPnl: finalNetPnl,
-      plannedRR: finalPlannedRR,
-      rMultiple: finalR,
-      realizedNetReturnPct: finalRealizedReturnPct !== null ? finalRealizedReturnPct : (editingTrade?.realizedNetReturnPct ?? null),
-      durationMinutes: finalDurationMinutes,
-      status: form.outcomeMode === 'TP' ? 'Win' : 'Loss',
-      killzone:
-        form.selectedWindow === 'window_1'
-          ? 'NY Open 09:30 AM (09:30-10:30)'
-          : 'NY Mid-Morning (10:30-12:00)',
-      playbookId: editingTrade?.playbookId || undefined,
-      pdArrays: finalPdArrays,
-      checklistCompleted: editingTrade?.checklistCompleted || [],
-      setupGrade: editingTrade?.setupGrade || 'Sin evaluar',
-      dailyBias: editingTrade?.dailyBias || 'Neutral',
-      dolTarget: editingTrade?.dolTarget || '',
-      timeframe: editingTrade?.timeframe || '15m',
-      followedPlan: editingTrade?.followedPlan ?? true,
-      psychologyTag: form.psychologyTag,
-      tradingViewUrl: form.tradingViewUrl || undefined,
-      screenshotDataUrl: form.screenshotDataUrl || undefined,
-      notes: form.notes,
-      accountId: resolvedAccountId,
-      calculationMode: finalCalculationMode,
-    };
 
     if (editingTrade) {
-      updateTrade({ ...payload, id: editingTrade.id });
+      updateTrade({ ...resolution.payload, id: editingTrade.id });
     } else {
-      addTrade(payload);
+      addTrade(resolution.payload);
     }
     onClose();
   };
@@ -675,7 +372,7 @@ function TradeFormModalContent({
                   className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 text-zinc-100 font-mono focus:outline-none focus:ring-2 ${theme.ringClass}`}
                 />
                 <span className="text-[10px] text-zinc-500 block mt-0.5">
-                  Si se omite, se preservará como &quot;Sin dato&quot; sin inventar 0%.
+                  Si se omite o limpia, se preservará como &quot;Sin dato&quot; (`null`) sin alterar P&amp;L.
                 </span>
               </div>
 
@@ -853,7 +550,7 @@ function TradeFormModalContent({
                   </div>
                 </div>
                 <p className="text-[10px] text-zinc-500">
-                  Especificación de contrato: {instrumentSpec.label} (Multiplicador: ${instrumentSpec.pointValue}/punto).
+                  Especificación: {instrumentSpec.unitLabel} — P&amp;L derivado de precios es teórico (sin comisiones ni slippage medidos).
                 </p>
               </div>
             )}

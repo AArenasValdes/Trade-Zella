@@ -14,6 +14,7 @@ import type {
   Timeframe,
   SetupGrade,
   PsychologyTag,
+  PnlProvenance,
 } from '@/types/trading';
 
 export interface TradingSnapshot {
@@ -80,8 +81,12 @@ interface TradeRow {
   time_precision?: string | null;
   operational_window?: string | null;
   calculation_mode?: string | null;
+  pnl_provenance?: string | null;
   commission_unmeasured?: boolean | null;
   prices_unrecorded?: boolean | null;
+  r_unrecorded?: boolean | null;
+  plan_unrecorded?: boolean | null;
+  has_data_conflict?: boolean | null;
   realized_net_return_pct?: number | null;
   duration_minutes?: number | null;
 }
@@ -133,11 +138,35 @@ const PSYCHOLOGY: readonly PsychologyTag[] = [
   'FOMO (Perseguir Precio)', 'Revenge Trade', 'Overtrading',
   'Regla Violada (Cerrado antes de TP/SL)', 'Sin clasificar',
 ];
+const PROVENANCE_VALUES: readonly PnlProvenance[] = [
+  'audited',
+  'theoretical',
+  'derived_r',
+  'unrecorded',
+];
 
 const cleanStringArray = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 
 function mapTrade(row: TradeRow, signedScreenshotUrl?: string): Trade {
+  const calculationMode =
+    row.calculation_mode === 'unrecorded'
+      ? 'unrecorded'
+      : row.calculation_mode === 'derived_r'
+      ? 'derived_r'
+      : 'monetary';
+  const commissionUnmeasured = Boolean(row.commission_unmeasured);
+  const pnlProvenance: PnlProvenance =
+    row.pnl_provenance && isOneOf(row.pnl_provenance, PROVENANCE_VALUES)
+      ? row.pnl_provenance
+      : calculationMode === 'unrecorded'
+      ? 'unrecorded'
+      : calculationMode === 'derived_r'
+      ? 'derived_r'
+      : commissionUnmeasured
+      ? 'theoretical'
+      : 'audited';
+
   return {
     id: row.id,
     accountId: row.account_id,
@@ -178,13 +207,13 @@ function mapTrade(row: TradeRow, signedScreenshotUrl?: string): Trade {
     operationalWindow: (row.operational_window === 'window_1' || row.operational_window === 'window_2' || row.operational_window === 'outside')
       ? row.operational_window
       : undefined,
-    calculationMode: (row.calculation_mode === 'unrecorded'
-      ? 'unrecorded'
-      : row.calculation_mode === 'derived_r'
-      ? 'derived_r'
-      : 'monetary'),
-    commissionUnmeasured: Boolean(row.commission_unmeasured),
+    calculationMode,
+    pnlProvenance,
+    commissionUnmeasured,
     pricesUnrecorded: Boolean(row.prices_unrecorded),
+    rUnrecorded: Boolean(row.r_unrecorded),
+    planUnrecorded: Boolean(row.plan_unrecorded),
+    hasDataConflict: Boolean(row.has_data_conflict),
     realizedNetReturnPct: row.realized_net_return_pct != null ? Number(row.realized_net_return_pct) : null,
     durationMinutes: row.duration_minutes != null ? Number(row.duration_minutes) : null,
   };
@@ -272,7 +301,19 @@ export async function loadTradingSnapshot(client: SupabaseClient): Promise<Tradi
   };
 }
 
-function tradeToRow(trade: Trade, screenshotPath: string | null) {
+export function tradeToRow(trade: Trade, screenshotPath: string | null) {
+  const calculationMode = trade.calculationMode ?? (trade.pricesUnrecorded ? 'unrecorded' : 'monetary');
+  const commissionUnmeasured = trade.commissionUnmeasured ?? false;
+  const pnlProvenance: PnlProvenance =
+    trade.pnlProvenance ??
+    (calculationMode === 'unrecorded'
+      ? 'unrecorded'
+      : calculationMode === 'derived_r'
+      ? 'derived_r'
+      : commissionUnmeasured
+      ? 'theoretical'
+      : 'audited');
+
   return {
     id: trade.id, account_id: trade.accountId, playbook_id: trade.playbookId || null,
     symbol: trade.symbol, direction: trade.direction,
@@ -289,9 +330,13 @@ function tradeToRow(trade: Trade, screenshotPath: string | null) {
     notes: trade.notes ?? null,
     time_precision: trade.timePrecision ?? 'exact',
     operational_window: trade.operationalWindow ?? null,
-    calculation_mode: trade.calculationMode ?? (trade.pricesUnrecorded ? 'unrecorded' : 'monetary'),
-    commission_unmeasured: trade.commissionUnmeasured ?? false,
+    calculation_mode: calculationMode,
+    pnl_provenance: pnlProvenance,
+    commission_unmeasured: commissionUnmeasured,
     prices_unrecorded: trade.pricesUnrecorded ?? false,
+    r_unrecorded: trade.rUnrecorded ?? false,
+    plan_unrecorded: trade.planUnrecorded ?? false,
+    has_data_conflict: trade.hasDataConflict ?? false,
     realized_net_return_pct: trade.realizedNetReturnPct ?? null,
     duration_minutes: trade.durationMinutes ?? null,
   };

@@ -1,9 +1,15 @@
-import type { Trade, PropAccount, DailyJournalNote, ICTPlaybook, PersonalTradingRule } from '../types/trading.ts';
+import type {
+  Trade,
+  PropAccount,
+  DailyJournalNote,
+  ICTPlaybook,
+  PersonalTradingRule,
+  PnlProvenance,
+} from '../types/trading.ts';
 import {
   autoCalculateTradeMath,
   detectKillzoneFromTime,
 } from './math-engine.ts';
-import { ICT_CHECKLIST_ITEMS } from '../config/ict-constants.ts';
 
 export const STORAGE_KEYS = {
   TRADES: 'zella_ict_trades_v3',
@@ -71,9 +77,10 @@ export function parseCsvNumber(raw: string | undefined): number {
   if (!raw) return NaN;
   const clean = raw.trim().replace(/^"|"$/g, '').trim();
   if (!clean) return NaN;
-  const normalized = clean.includes(',') && !clean.includes('.')
-    ? clean.replace(',', '.')
-    : clean.replace(/,/g, '');
+  const normalized =
+    clean.includes(',') && !clean.includes('.')
+      ? clean.replace(',', '.')
+      : clean.replace(/,/g, '');
   const val = parseFloat(normalized);
   return Number.isFinite(val) ? val : NaN;
 }
@@ -130,7 +137,10 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
     const takeProfit = parseCsvNumber(row['take profit'] || row['tp']) || 0;
     const size =
       parseCsvNumber(row['qty'] || row['size'] || row['lotes'] || row['contratos']) || 1;
-    const commission = parseCsvNumber(row['commission'] || row['fee']) || 0;
+    const rawCommission = parseCsvNumber(row['commission'] || row['fee']);
+    const hasMeasuredCommission = !isNaN(rawCommission);
+    const commission = hasMeasuredCommission ? rawCommission : 0;
+
     const rawDate =
       row['time'] ||
       row['date'] ||
@@ -150,6 +160,7 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
       size,
       commission,
       direction,
+      hasMeasuredCommission,
     });
 
     const explicitPnl = parseCsvNumber(
@@ -163,7 +174,13 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
     );
 
     // Duration: strictly accept integer minutes and reject decimal values without silently rounding
-    const rawDurationStr = (row['duration'] || row['duracion'] || row['minutes'] || row['minutos'] || '').trim();
+    const rawDurationStr = (
+      row['duration'] ||
+      row['duracion'] ||
+      row['minutes'] ||
+      row['minutos'] ||
+      ''
+    ).trim();
     let finalDuration: number | null = null;
     if (rawDurationStr !== '') {
       if (/^\d+$/.test(rawDurationStr)) {
@@ -174,24 +191,55 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
     }
 
     const hasPrices = entryPrice > 0 && exitPrice > 0;
-    const finalNetPnl = !isNaN(explicitPnl) ? explicitPnl : (hasPrices ? calc.netPnl : 0);
+    const hasMonetaryResult = !isNaN(explicitPnl) || (hasPrices && calc.verifiedSpec);
+    const finalNetPnl = !isNaN(explicitPnl)
+      ? explicitPnl
+      : hasPrices && calc.verifiedSpec
+      ? calc.netPnl
+      : 0;
 
     // Explicit outcome column
-    const explicitStatusRaw = (row['status'] || row['estado'] || row['outcome'] || row['resultado_operacion'] || '').trim().toLowerCase();
+    const explicitStatusRaw = (
+      row['status'] ||
+      row['estado'] ||
+      row['outcome'] ||
+      row['resultado_operacion'] ||
+      ''
+    )
+      .trim()
+      .toLowerCase();
     const explicitStatus: 'Win' | 'Loss' | null =
-      explicitStatusRaw === 'win' || explicitStatusRaw === 'tp' || explicitStatusRaw === 'ganada'
+      explicitStatusRaw === 'win' ||
+      explicitStatusRaw === 'tp' ||
+      explicitStatusRaw === 'ganada'
         ? 'Win'
-        : explicitStatusRaw === 'loss' || explicitStatusRaw === 'sl' || explicitStatusRaw === 'perdida'
+        : explicitStatusRaw === 'loss' ||
+          explicitStatusRaw === 'sl' ||
+          explicitStatusRaw === 'perdida'
         ? 'Loss'
         : null;
 
-    // Check for contradictory signals (e.g. positive R with negative PnL)
+    // Check for contradictory signals across R, PnL, Return %, and Status
     const conflicts: string[] = [];
     if (!isNaN(explicitR) && !isNaN(explicitPnl)) {
       if (explicitR > 0 && explicitPnl < 0) {
         conflicts.push('R positivo con PnL negativo');
       } else if (explicitR < 0 && explicitPnl > 0) {
         conflicts.push('R negativo con PnL positivo');
+      }
+    }
+    if (!isNaN(explicitR) && !isNaN(explicitReturnPct)) {
+      if (explicitR > 0 && explicitReturnPct < 0) {
+        conflicts.push('R positivo con retorno % negativo');
+      } else if (explicitR < 0 && explicitReturnPct > 0) {
+        conflicts.push('R negativo con retorno % positivo');
+      }
+    }
+    if (!isNaN(explicitPnl) && !isNaN(explicitReturnPct)) {
+      if (explicitPnl > 0 && explicitReturnPct < 0) {
+        conflicts.push('PnL positivo con retorno % negativo');
+      } else if (explicitPnl < 0 && explicitReturnPct > 0) {
+        conflicts.push('PnL negativo con retorno % positivo');
       }
     }
     if (explicitStatus && !isNaN(explicitR)) {
@@ -201,26 +249,34 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
         conflicts.push('Estado Loss con R positivo');
       }
     }
+    if (explicitStatus && !isNaN(explicitPnl)) {
+      if (explicitStatus === 'Win' && explicitPnl < 0) {
+        conflicts.push('Estado Win con PnL negativo');
+      } else if (explicitStatus === 'Loss' && explicitPnl > 0) {
+        conflicts.push('Estado Loss con PnL positivo');
+      }
+    }
+    if (explicitStatus && !isNaN(explicitReturnPct)) {
+      if (explicitStatus === 'Win' && explicitReturnPct < 0) {
+        conflicts.push('Estado Win con retorno % negativo');
+      } else if (explicitStatus === 'Loss' && explicitReturnPct > 0) {
+        conflicts.push('Estado Loss con retorno % positivo');
+      }
+    }
 
     // Check if row has an interpretable financial result
     const hasInterpretableOutcome =
       (!isNaN(explicitPnl) && explicitPnl !== 0) ||
       (!isNaN(explicitR) && explicitR !== 0) ||
       (!isNaN(explicitReturnPct) && explicitReturnPct !== 0) ||
-      (explicitStatus !== null) ||
-      (hasPrices && calc.netPnl !== 0);
+      explicitStatus !== null ||
+      (hasPrices && calc.verifiedSpec && calc.netPnl !== 0);
 
     // Reject records without interpretable result (do NOT invent Loss or -1R)
     if (!hasInterpretableOutcome) {
       continue;
     }
 
-    // Consistent classification rule priority:
-    // 1. Explicit PnL if non-zero
-    // 2. Explicit R if non-zero
-    // 3. Explicit Return % if non-zero
-    // 4. Explicit Status
-    // 5. Prices math
     let status: 'Win' | 'Loss';
     if (!isNaN(explicitPnl) && explicitPnl !== 0) {
       status = explicitPnl > 0 ? 'Win' : 'Loss';
@@ -234,15 +290,32 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
       status = calc.netPnl > 0 ? 'Win' : 'Loss';
     }
 
-    const finalR = !isNaN(explicitR)
-      ? explicitR
-      : (calc.rMultiple !== 0 ? calc.rMultiple : (status === 'Win' ? 2 : -1));
+    // Correction 3: Do NOT invent +2R or -1R if CSV only provides percentage, PnL, or status without R!
+    const hasKnownR = !isNaN(explicitR) || calc.rMultiple !== 0;
+    const finalR = !isNaN(explicitR) ? explicitR : hasKnownR ? calc.rMultiple : 0;
+    const finalPlannedRR =
+      calc.plannedRR > 0
+        ? calc.plannedRR
+        : hasKnownR
+        ? Number(Math.abs(finalR).toFixed(2))
+        : 0;
+    const rUnrecorded = !hasKnownR;
 
+    const hasDataConflict = conflicts.length > 0;
     let rowNotes = row['notes'] || row['notas'] || 'Importado desde CSV (Notion / TradingView)';
-    if (conflicts.length > 0) {
-      rowNotes = `[Conflicto importación: ${conflicts.join(', ')}] ${rowNotes}`;
+    if (hasDataConflict) {
+      rowNotes = `[Conflicto importación en revisión: ${conflicts.join(', ')}] ${rowNotes}`;
     }
 
+    const pnlProvenance: PnlProvenance = !isNaN(explicitPnl)
+      ? 'audited'
+      : hasPrices && calc.verifiedSpec
+      ? hasMeasuredCommission
+        ? 'audited'
+        : 'theoretical'
+      : 'unrecorded';
+
+    // Correction 6: Do not assign fictitious legacy ICT fields on CSV import
     imported.push({
       id: `imp-${Date.now()}-${i}`,
       symbol,
@@ -253,29 +326,35 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
       stopLoss,
       takeProfit,
       size,
-      riskPercentUsed: 1.0,
-      htfAligned: ['1D', '4H', '2H', '30m'],
-      grossPnl: Number((finalNetPnl + commission).toFixed(2)),
+      riskPercentUsed: undefined,
+      htfAligned: [],
+      grossPnl: hasMonetaryResult ? Number((finalNetPnl + commission).toFixed(2)) : 0,
       commission,
+      commissionUnmeasured: !isNaN(explicitPnl) ? false : !hasMeasuredCommission,
       netPnl: finalNetPnl,
-      plannedRR: calc.plannedRR || 2,
+      plannedRR: finalPlannedRR,
       rMultiple: finalR,
+      rUnrecorded,
       status,
       killzone: detectKillzoneFromTime(formattedDate),
-      pdArrays: ['Contexto HTF (1D/4H/2H/30m)'],
-      checklistCompleted: ICT_CHECKLIST_ITEMS,
-      setupGrade: 'A+',
-      dailyBias: direction === 'Long' ? 'Bullish' : 'Bearish',
-      dolTarget: row['dol'] || row['target'] || 'HTF Liquidity',
+      pdArrays: [],
+      checklistCompleted: [],
+      setupGrade: 'Sin evaluar',
+      dailyBias: 'Neutral',
+      dolTarget: row['dol'] || row['target'] || '',
       timeframe: '15m',
-      followedPlan: true,
-      psychologyTag: 'A+ Alineado al Contexto HTF',
+      followedPlan: false,
+      planUnrecorded: true,
+      psychologyTag: 'Sin clasificar',
       notes: rowNotes,
       accountId: targetAccountId,
-      calculationMode: hasPrices || !isNaN(explicitPnl) ? 'monetary' : 'unrecorded',
+      calculationMode: hasMonetaryResult ? 'monetary' : 'unrecorded',
+      pnlProvenance,
       pricesUnrecorded: !hasPrices,
       realizedNetReturnPct: !isNaN(explicitReturnPct) ? explicitReturnPct : null,
       durationMinutes: finalDuration,
+      hasDataConflict,
+      conflictReasons: hasDataConflict ? conflicts : undefined,
     });
   }
 

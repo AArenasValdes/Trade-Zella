@@ -12,6 +12,7 @@ import {
   Edit3,
   CheckCircle2,
   Maximize2,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface TradeInspectorDrawerProps {
@@ -36,6 +37,10 @@ export function TradeInspectorDrawer({
   const playbookName = playbooks.find((p) => p.id === trade.playbookId)?.name || 'Setup Personalizado';
   const tradeReturnPct = resolveTradeReturnPct(trade, targetAccount?.initialBalance);
   const isUnrecorded = trade.calculationMode === 'unrecorded';
+  const isTheoretical =
+    !isUnrecorded &&
+    trade.calculationMode === 'monetary' &&
+    (trade.commissionUnmeasured || trade.pnlProvenance === 'theoretical');
 
   return (
     <>
@@ -48,6 +53,15 @@ export function TradeInspectorDrawer({
           onClick={(e) => e.stopPropagation()}
         >
           <div className="space-y-5">
+            {trade.hasDataConflict && (
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-300 flex items-center gap-2 font-semibold">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>
+                  Registro con conflicto de datos — excluido de agregados estadísticos hasta su revisión.
+                </span>
+              </div>
+            )}
+
             <div className="flex items-center justify-between pb-4 border-b border-white/[0.08]">
               <div>
                 <div className="flex items-center gap-2">
@@ -96,9 +110,13 @@ export function TradeInspectorDrawer({
                       '(Sin dato monetario)'
                     ) : (
                       <>
-                        ({trade.calculationMode === 'derived_r' ? '~' : ''}
+                        ({trade.calculationMode === 'derived_r' || isTheoretical ? '~' : ''}
                         {trade.netPnl >= 0 ? `+$${trade.netPnl.toFixed(2)}` : `-$${Math.abs(trade.netPnl).toFixed(2)}`} USD
-                        {trade.calculationMode === 'derived_r' ? ' derivado' : ''})
+                        {trade.calculationMode === 'derived_r'
+                          ? ' derivado'
+                          : isTheoretical
+                          ? ' teórico — sin comisiones'
+                          : ' auditado'})
                       </>
                     )}
                   </span>
@@ -120,7 +138,9 @@ export function TradeInspectorDrawer({
               {trade.pricesUnrecorded ? (
                 <div className="col-span-2 sm:col-span-4 text-center py-1 text-zinc-400 text-xs flex items-center justify-between">
                   <span>Registro simplificado V1b (R-Multiple independiente)</span>
-                  <strong className={`text-sm ${theme.accentTextClass}`}>{trade.rMultiple}R</strong>
+                  <strong className={`text-sm ${theme.accentTextClass}`}>
+                    {trade.rUnrecorded ? 'Sin R' : `${trade.rMultiple}R`}
+                  </strong>
                 </div>
               ) : (
                 <>
@@ -138,7 +158,9 @@ export function TradeInspectorDrawer({
                   </div>
                   <div>
                     <span className="text-zinc-500 block">R-Multiple</span>
-                    <strong className={`text-sm ${theme.accentTextClass}`}>{trade.rMultiple}R</strong>
+                    <strong className={`text-sm ${theme.accentTextClass}`}>
+                      {trade.rUnrecorded ? 'Sin R' : `${trade.rMultiple}R`}
+                    </strong>
                   </div>
                 </>
               )}

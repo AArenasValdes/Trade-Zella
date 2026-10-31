@@ -14,6 +14,8 @@ import {
   calculateMonthlyReturnPct,
   resolveTradeReturnPct,
   formatReturnPct,
+  isTradeIncludedInAggregates,
+  hasValidRMultiple,
 } from '@/services/financial-engine';
 import type { Trade } from '@/types/trading';
 import {
@@ -68,14 +70,17 @@ export function CalendarView({
     trades.forEach((t) => {
       const day = extractNyDateKey(t.entryDate) || t.entryDate.slice(0, 10);
       if (!map[day]) map[day] = { pnl: 0, sumR: 0, hasMonetary: false, returnPct: null, count: 0, wins: 0, trades: [] };
+      map[day].trades.push(t);
+      if (!isTradeIncludedInAggregates(t)) return;
       if (t.calculationMode !== 'unrecorded') {
         map[day].pnl = Number((map[day].pnl + t.netPnl).toFixed(2));
         map[day].hasMonetary = true;
       }
-      map[day].sumR = Number((map[day].sumR + (Number.isFinite(t.rMultiple) ? t.rMultiple : 0)).toFixed(2));
+      if (hasValidRMultiple(t)) {
+        map[day].sumR = Number((map[day].sumR + t.rMultiple).toFixed(2));
+      }
       map[day].count += 1;
       if (t.status === 'Win' || t.netPnl > 0) map[day].wins += 1;
-      map[day].trades.push(t);
     });
 
     Object.values(map).forEach((entry) => {
@@ -134,6 +139,7 @@ export function CalendarView({
     const weekBuckets = new Map<string, Trade[]>();
     const weekendTrades: Trade[] = [];
     for (const trade of monthlyTrades) {
+      if (!isTradeIncludedInAggregates(trade)) continue;
       const nyDate = extractNyDateKey(trade.entryDate) || trade.entryDate.slice(0, 10);
       if (!isValidDateKey(nyDate)) continue;
       const [tradeYear, tradeMonth, tradeDay] = nyDate.split('-').map(Number);
@@ -155,7 +161,12 @@ export function CalendarView({
       const weekEnd = sun.toISOString().slice(0, 10);
       const monetary = weeklyTrades.filter((t) => t.calculationMode !== 'unrecorded');
       const pnl = monetary.reduce((sum, trade) => sum + trade.netPnl, 0);
-      const sumR = Number(weeklyTrades.reduce((sum, trade) => sum + (Number.isFinite(trade.rMultiple) ? trade.rMultiple : 0), 0).toFixed(2));
+      const sumR = Number(
+        weeklyTrades
+          .filter(hasValidRMultiple)
+          .reduce((sum, trade) => sum + trade.rMultiple, 0)
+          .toFixed(2)
+      );
 
       return {
         weekStart,
@@ -378,7 +389,7 @@ export function CalendarView({
                       )}
                     </span>
                     <div className="flex items-center gap-1">
-                      {dayData && (
+                      {dayData && dayData.count > 0 && (
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/50 text-zinc-300 border border-white/[0.06]">
                           {dayData.count}t
                         </span>
@@ -398,7 +409,7 @@ export function CalendarView({
                     </div>
                   </div>
 
-                  {dayData && (
+                  {dayData && dayData.count > 0 && (
                     <div className="text-right">
                       <div
                         className={`text-sm font-extrabold tabular-nums ${
@@ -529,7 +540,11 @@ export function CalendarView({
                                 : 'text-rose-400'
                             }`}
                           >
-                            {t.rMultiple > 0 ? `+${t.rMultiple}R` : `${t.rMultiple}R`}
+                            {t.rUnrecorded
+                              ? 'Sin R'
+                              : t.rMultiple > 0
+                              ? `+${t.rMultiple}R`
+                              : `${t.rMultiple}R`}
                             {retPct !== null && (
                               <span className="ml-1 text-[11px] font-normal text-zinc-400">
                                 ({formatReturnPct(retPct)})
@@ -538,7 +553,7 @@ export function CalendarView({
                           </span>
                           {!isUnrecorded && t.netPnl !== 0 ? (
                             <span className="text-[10px] text-zinc-500 font-mono">
-                              {t.calculationMode === 'derived_r' ? '~' : ''}
+                              {t.calculationMode === 'derived_r' || t.commissionUnmeasured ? '~' : ''}
                               {t.netPnl >= 0 ? `+$${t.netPnl.toFixed(2)}` : `-$${Math.abs(t.netPnl).toFixed(2)}`} USD
                             </span>
                           ) : (

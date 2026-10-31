@@ -7,6 +7,7 @@ import type {
   DashboardMetrics,
   RiskCalculationInput,
   RiskCalculationResult,
+  PnlProvenance,
 } from '../types/trading.ts';
 import { getInstrumentSpec, ICT_CHECKLIST_ITEMS } from '../config/ict-constants.ts';
 import {
@@ -15,7 +16,8 @@ import {
   calculateAvgLossReturnPct,
   calculateExpectancyReturnPct,
   calculatePercentageEquityCurve,
-  resolveTradeReturnPct,
+  isTradeIncludedInAggregates,
+  hasValidRMultiple,
 } from './financial-engine.ts';
 
 export function detectKillzoneFromTime(dateTimeStr: string): Killzone {
@@ -49,6 +51,85 @@ export function calculateSetupGrade(
   return 'C';
 }
 
+export interface TheoreticalInstrumentPnlResult {
+  grossPnl: number;
+  netPnl: number;
+  pointValue: number;
+  contractSize: number;
+  tickSize: number;
+  tickValue: number;
+  unitLabel: string;
+  verified: boolean;
+  provenance: PnlProvenance;
+}
+
+/**
+ * Calculates theoretical price-derived P&L for an instrument only if its specification
+ * (contractSize, tickSize, tickValue, pointValue) is verified and prices/size are valid.
+ * Never labels price-derived P&L without measured commissions as 'audited'.
+ */
+export function calculateTheoreticalInstrumentPnl(params: {
+  symbol: string;
+  direction: TradeDirection;
+  entryPrice: number;
+  exitPrice: number;
+  size: number;
+  commission?: number;
+  hasMeasuredCommission?: boolean;
+}): TheoreticalInstrumentPnlResult {
+  const {
+    symbol,
+    direction,
+    entryPrice,
+    exitPrice,
+    size,
+    commission = 0,
+    hasMeasuredCommission = false,
+  } = params;
+  const spec = getInstrumentSpec(symbol);
+
+  if (
+    !spec.verified ||
+    !Number.isFinite(entryPrice) ||
+    !Number.isFinite(exitPrice) ||
+    !Number.isFinite(size) ||
+    entryPrice <= 0 ||
+    exitPrice <= 0 ||
+    size <= 0 ||
+    spec.tickSize <= 0 ||
+    spec.tickValue <= 0
+  ) {
+    return {
+      grossPnl: 0,
+      netPnl: 0,
+      pointValue: spec.pointValue,
+      contractSize: spec.contractSize,
+      tickSize: spec.tickSize,
+      tickValue: spec.tickValue,
+      unitLabel: spec.unitLabel,
+      verified: false,
+      provenance: 'unrecorded',
+    };
+  }
+
+  const priceDiff = direction === 'Long' ? exitPrice - entryPrice : entryPrice - exitPrice;
+  const ticks = priceDiff / spec.tickSize;
+  const grossPnl = Number((ticks * spec.tickValue * size).toFixed(2));
+  const netPnl = Number((grossPnl - commission).toFixed(2));
+
+  return {
+    grossPnl,
+    netPnl,
+    pointValue: spec.pointValue,
+    contractSize: spec.contractSize,
+    tickSize: spec.tickSize,
+    tickValue: spec.tickValue,
+    unitLabel: spec.unitLabel,
+    verified: true,
+    provenance: hasMeasuredCommission ? 'audited' : 'theoretical',
+  };
+}
+
 export function autoCalculateTradeMath(params: {
   symbol: string;
   entryPrice: number;
@@ -58,8 +139,18 @@ export function autoCalculateTradeMath(params: {
   size: number;
   commission: number;
   direction?: TradeDirection;
+  hasMeasuredCommission?: boolean;
 }) {
-  const { symbol, entryPrice, exitPrice, stopLoss, takeProfit, size, commission } = params;
+  const {
+    symbol,
+    entryPrice,
+    exitPrice,
+    stopLoss,
+    takeProfit,
+    size,
+    commission,
+    hasMeasuredCommission = false,
+  } = params;
   const cleanSymbol = symbol.trim().toUpperCase();
 
   let direction: TradeDirection = params.direction || 'Long';
@@ -70,7 +161,6 @@ export function autoCalculateTradeMath(params: {
   }
 
   const spec = getInstrumentSpec(cleanSymbol);
-  const multiplier = spec.pointValue;
   const priceDiff = direction === 'Long' ? exitPrice - entryPrice : entryPrice - exitPrice;
   const riskPerUnit = stopLoss > 0 ? Math.abs(entryPrice - stopLoss) : 0;
 
@@ -87,18 +177,30 @@ export function autoCalculateTradeMath(params: {
       ? Number((rewardPlannedPerUnit / riskPerUnit).toFixed(2))
       : 0;
 
-  const grossPnl = spec.verified ? Number((priceDiff * multiplier * size).toFixed(2)) : 0;
-  const netPnl = spec.verified ? Number((grossPnl - commission).toFixed(2)) : 0;
+  const pnlCalc = calculateTheoreticalInstrumentPnl({
+    symbol: cleanSymbol,
+    direction,
+    entryPrice,
+    exitPrice,
+    size,
+    commission,
+    hasMeasuredCommission: hasMeasuredCommission || commission > 0,
+  });
 
   return {
     direction,
     rMultiple,
     plannedRR,
-    grossPnl,
-    netPnl,
-    pointValue: multiplier,
+    grossPnl: pnlCalc.grossPnl,
+    netPnl: pnlCalc.netPnl,
+    pointValue: spec.pointValue,
+    contractSize: spec.contractSize,
+    tickSize: spec.tickSize,
+    tickValue: spec.tickValue,
+    unitLabel: spec.unitLabel,
     verifiedSpec: spec.verified,
     specLabel: spec.label,
+    pnlProvenance: pnlCalc.provenance,
   };
 }
 
@@ -123,14 +225,14 @@ export function calculatePositionSize(
 
   return {
     riskDollars,
-    stopDistancePoints: Number(stopDistance.toFixed(2)),
+    stopDistancePoints: Number(stopDistance.toFixed(4)),
     pointValue,
     recommendedSize,
     direction,
     targets: {
-      r1: Number((entryPrice + sign * stopDistance * 1).toFixed(2)),
-      r2: Number((entryPrice + sign * stopDistance * 2).toFixed(2)),
-      r3: Number((entryPrice + sign * stopDistance * 3).toFixed(2)),
+      r1: Number((entryPrice + sign * stopDistance * 1).toFixed(4)),
+      r2: Number((entryPrice + sign * stopDistance * 2).toFixed(4)),
+      r3: Number((entryPrice + sign * stopDistance * 3).toFixed(4)),
     },
   };
 }
@@ -143,12 +245,26 @@ export function calculateDashboardMetrics(
   const verifiedAccounts = accounts.filter(
     (a) => a.hasVerifiedBalance !== false && Number.isFinite(a.initialBalance) && a.initialBalance > 0
   );
-  const refCapital = verifiedAccounts.reduce((s, a) => s + a.initialBalance, 0);
+  const refCapital =
+    targetAccountId && targetAccountId !== 'All'
+      ? verifiedAccounts.find((a) => a.id === targetAccountId)?.initialBalance ?? 0
+      : verifiedAccounts.reduce((s, a) => s + a.initialBalance, 0);
 
-  if (trades.length === 0) {
+  const tradesInScope =
+    targetAccountId && targetAccountId !== 'All'
+      ? trades.filter((t) => t.accountId === targetAccountId)
+      : trades;
+
+  // Exclude contradictory/conflicted trades from statistical aggregates until resolved
+  const validTrades = tradesInScope.filter(isTradeIncludedInAggregates);
+  const conflictedTradesCount = tradesInScope.length - validTrades.length;
+
+  if (validTrades.length === 0) {
     return {
       netPnl: 0,
-      netReturnPct: refCapital > 0 ? 0 : null,
+      netReturnPct: refCapital > 0 && tradesInScope.length === 0 ? 0 : null,
+      returnBase: refCapital > 0 ? 'constant_initial_capital' : 'insufficient_data',
+      isPartialReturn: conflictedTradesCount > 0,
       grossProfit: 0,
       grossLoss: 0,
       totalCommissions: 0,
@@ -191,10 +307,16 @@ export function calculateDashboardMetrics(
       monetarySampleSize: 0,
       rSampleSize: 0,
       dataCoverage: {
-        totalTrades: 0,
+        totalTrades: tradesInScope.length,
         monetaryTradesCount: 0,
         returnPctTradesCount: 0,
         unrecordedTradesCount: 0,
+        rMultipleTradesCount: 0,
+        unrecordedRTradesCount: 0,
+        conflictedTradesCount,
+        includedTradesCount: 0,
+        excludedTradesCount: tradesInScope.length,
+        isPartialCoverage: conflictedTradesCount > 0,
         hasVerifiedReferenceCapital: refCapital > 0,
       },
       curveMode: refCapital > 0 ? 'percentage' : 'r_multiple',
@@ -202,7 +324,7 @@ export function calculateDashboardMetrics(
     };
   }
 
-  const sorted = [...trades].sort(
+  const sorted = [...validTrades].sort(
     (a, b) => a.entryDate.localeCompare(b.entryDate) || a.id.localeCompare(b.id)
   );
 
@@ -227,7 +349,7 @@ export function calculateDashboardMetrics(
   const totalTrades = sorted.length;
   const winRate = totalTrades > 0 ? Number(((wins.length / totalTrades) * 100).toFixed(1)) : 0;
 
-  // Profit Factor & Expectancy: calculated on strictly coherent populations!
+  // Profit Factor & Expectancy: calculated on strictly coherent populations
   let profitFactorUSD: number | null = null;
   let expectancyUSD: number | null = null;
   let avgWin = 0;
@@ -244,8 +366,8 @@ export function calculateDashboardMetrics(
       : Number((grossProfit / grossLoss).toFixed(2));
   }
 
-  // Population R
-  const rTrades = sorted.filter((t) => Number.isFinite(t.rMultiple));
+  // Population R (strictly excludes trades with rUnrecorded === true)
+  const rTrades = sorted.filter(hasValidRMultiple);
   const rSampleSize = rTrades.length;
   let profitFactorR: number | null = null;
   let expectancyR: number | null = null;
@@ -321,7 +443,12 @@ export function calculateDashboardMetrics(
       longs.length > 0
         ? Math.round((longs.filter((t) => t.status === 'Win').length / longs.length) * 100)
         : 0,
-    netPnl: Number(longs.filter((t) => t.calculationMode !== 'unrecorded' && Number.isFinite(t.netPnl)).reduce((a, b) => a + b.netPnl, 0).toFixed(2)),
+    netPnl: Number(
+      longs
+        .filter((t) => t.calculationMode !== 'unrecorded' && Number.isFinite(t.netPnl))
+        .reduce((a, b) => a + b.netPnl, 0)
+        .toFixed(2)
+    ),
   };
 
   const shortStats = {
@@ -330,12 +457,26 @@ export function calculateDashboardMetrics(
       shorts.length > 0
         ? Math.round((shorts.filter((t) => t.status === 'Win').length / shorts.length) * 100)
         : 0,
-    netPnl: Number(shorts.filter((t) => t.calculationMode !== 'unrecorded' && Number.isFinite(t.netPnl)).reduce((a, b) => a + b.netPnl, 0).toFixed(2)),
+    netPnl: Number(
+      shorts
+        .filter((t) => t.calculationMode !== 'unrecorded' && Number.isFinite(t.netPnl))
+        .reduce((a, b) => a + b.netPnl, 0)
+        .toFixed(2)
+    ),
   };
 
-  const planComplianceRate = Number(
-    ((sorted.filter((t) => t.followedPlan).length / totalTrades) * 100).toFixed(1)
-  );
+  // Plan compliance rate is evaluated strictly on trades that recorded plan compliance (!planUnrecorded)
+  const planEvaluatedTrades = sorted.filter((t) => !t.planUnrecorded);
+  const planComplianceRate =
+    planEvaluatedTrades.length > 0
+      ? Number(
+          (
+            (planEvaluatedTrades.filter((t) => t.followedPlan).length /
+              planEvaluatedTrades.length) *
+            100
+          ).toFixed(1)
+        )
+      : 0;
 
   const wrScore = Math.min(Math.round((winRate / 65) * 100), 100);
   const pfScore = Math.min(Math.round((profitFactor / 2.8) * 100), 100);
@@ -349,32 +490,31 @@ export function calculateDashboardMetrics(
     wrScore * 0.25 + pfScore * 0.25 + rrScore * 0.2 + planComplianceRate * 0.2 + riskScore * 0.1
   );
 
-  const consolidated = calculateConsolidatedReturnPct(sorted, accounts, targetAccountId);
+  // Pass tradesInScope to consolidated so coverage reflects conflictedTradesCount accurately
+  const consolidated = calculateConsolidatedReturnPct(tradesInScope, accounts, targetAccountId);
   const avgWinPct = calculateAvgWinReturnPct(wins, accounts, targetAccountId);
   const avgLossPct = calculateAvgLossReturnPct(losses, accounts, targetAccountId);
 
-  // Compute pctWinRate solely on trades that have valid return percentage
-  const tradesWithPct = sorted.filter((t) => {
-    const acc = t.accountId ? accounts.find((a) => a.id === t.accountId) : undefined;
-    const r = resolveTradeReturnPct(t, acc?.initialBalance);
-    return r !== null && Number.isFinite(r);
-  });
+  // Compute expectancyPct strictly on the monetary sample over constant initial capital
   let expectancyPct: number | null = null;
-  if (tradesWithPct.length > 0 && avgWinPct !== null && avgLossPct !== null) {
-    const pctWins = tradesWithPct.filter((t) => {
-      const acc = t.accountId ? accounts.find((a) => a.id === t.accountId) : undefined;
-      const r = resolveTradeReturnPct(t, acc?.initialBalance);
-      return (r ?? 0) > 0;
-    });
-    const pctWinRate = (pctWins.length / tradesWithPct.length) * 100;
-    expectancyPct = calculateExpectancyReturnPct(pctWinRate, avgWinPct, avgLossPct);
+  if (monetarySampleSize > 0 && consolidated.totalReferenceCapital > 0) {
+    const monetaryWinRatePct = (monetaryWins.length / monetarySampleSize) * 100;
+    const effAvgWinPct = avgWinPct ?? 0;
+    const effAvgLossPct = avgLossPct ?? 0;
+    expectancyPct = calculateExpectancyReturnPct(
+      monetaryWinRatePct,
+      effAvgWinPct,
+      effAvgLossPct
+    );
   }
 
-  const equityResult = calculatePercentageEquityCurve(sorted, accounts, targetAccountId);
+  const equityResult = calculatePercentageEquityCurve(tradesInScope, accounts, targetAccountId);
 
   return {
     netPnl,
     netReturnPct: consolidated.returnPct !== null ? Number(consolidated.returnPct.toFixed(2)) : null,
+    returnBase: consolidated.returnBase,
+    isPartialReturn: consolidated.isPartial,
     grossProfit,
     grossLoss,
     totalCommissions,
@@ -397,7 +537,10 @@ export function calculateDashboardMetrics(
     monetarySampleSize,
     rSampleSize,
     avgRMultiple,
-    maxDrawdown: equityResult.curveMode === 'percentage' ? Number(maxDrawdown.toFixed(2)) : (equityResult.maxDrawdownR ?? 0),
+    maxDrawdown:
+      equityResult.curveMode === 'percentage'
+        ? Number(maxDrawdown.toFixed(2))
+        : (equityResult.maxDrawdownR ?? 0),
     maxDrawdownPct: equityResult.maxDrawdownPct,
     bestTrade,
     bestTradeReturnPct: equityResult.bestTradeReturnPct,

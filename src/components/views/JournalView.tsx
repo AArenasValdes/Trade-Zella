@@ -13,6 +13,7 @@ import {
   Eye,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   Edit3,
   Trash2,
   Filter,
@@ -272,6 +273,11 @@ export function JournalView({ onInspectTrade, onEditTrade }: JournalViewProps) {
                             {trade.durationMinutes} min
                           </span>
                         )}
+                        {trade.hasDataConflict && (
+                          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 inline-flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3" /> En revisión
+                          </span>
+                        )}
                         {hasImg && (
                           <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 ${theme.badgeClass}`}>
                             <Eye className="w-3 h-3" /> Chart
@@ -371,7 +377,11 @@ export function JournalView({ onInspectTrade, onEditTrade }: JournalViewProps) {
 
                     <td className="py-4 px-4 text-right font-mono tabular-nums">
                       <div className="font-bold text-zinc-200">
-                        {trade.rMultiple > 0 ? `+${trade.rMultiple}R` : `${trade.rMultiple}R`}
+                        {trade.rUnrecorded
+                          ? 'Sin R'
+                          : trade.rMultiple > 0
+                          ? `+${trade.rMultiple}R`
+                          : `${trade.rMultiple}R`}
                       </div>
                       {trade.riskPercentUsed && (
                         <span className="text-[10px] text-zinc-500">
@@ -385,6 +395,10 @@ export function JournalView({ onInspectTrade, onEditTrade }: JournalViewProps) {
                         const acc = accounts.find((a) => a.id === trade.accountId);
                         const retPct = resolveTradeReturnPct(trade, acc?.initialBalance);
                         const isUnrecorded = trade.calculationMode === 'unrecorded';
+                        const isTheoretical =
+                          !isUnrecorded &&
+                          trade.calculationMode === 'monetary' &&
+                          (trade.commissionUnmeasured || trade.pnlProvenance === 'theoretical');
                         const isPositive = retPct !== null ? retPct >= 0 : (trade.status === 'Win' || trade.netPnl >= 0);
 
                         return (
@@ -411,11 +425,15 @@ export function JournalView({ onInspectTrade, onEditTrade }: JournalViewProps) {
                                 'Sin dato'
                               ) : (
                                 <>
-                                  {trade.calculationMode === 'derived_r' ? '~' : ''}
+                                  {trade.calculationMode === 'derived_r' || isTheoretical ? '~' : ''}
                                   {trade.netPnl >= 0
                                     ? `+$${trade.netPnl.toFixed(2)}`
                                     : `-$${Math.abs(trade.netPnl).toFixed(2)}`}
-                                  {trade.calculationMode === 'derived_r' ? ' (derivado)' : ''}
+                                  {trade.calculationMode === 'derived_r'
+                                    ? ' (derivado)'
+                                    : isTheoretical
+                                    ? ' (teórico)'
+                                    : ''}
                                 </>
                               )}
                             </span>
