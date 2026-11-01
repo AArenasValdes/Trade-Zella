@@ -6,7 +6,8 @@
  * 2. Shared monthly budget hard cap of $5.00 USD across instances.
  * 3. Atomic reservation via PostgreSQL transactional locking before calling DeepSeek.
  * 4. Fail-closed behavior: In production, any database/RPC failure blocks DeepSeek calls.
- * 5. Distinct official rates ($0.30/$1.20 per 1M) vs conservative reservation buffer.
+ * 5. Distinct official rates ($0.30/$1.20 per 1M) vs conservative reservation buffer ($0.010 USD).
+ * 6. Strict confirmation of RPC settlement and refund responses (no silent success).
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -33,7 +34,7 @@ export const MONTHLY_TARGET_MAX_USD = 2.0; // Expected monthly target
 export const MAX_INPUT_TOKENS_TARGET = 8000;
 export const MAX_OUTPUT_TOKENS_TARGET = 800;
 
-// Conservative upfront reservation per query ($0.010 USD)
+// Conservative upfront reservation per query ($0.010 USD covers max 8k in + 800 out)
 export const RESERVATION_AMOUNT_USD = 0.01;
 
 export type SupabaseBudgetClient = SupabaseClient;
@@ -58,8 +59,16 @@ export interface ReservationResult {
 }
 
 export interface SettlementResult {
+  ok: boolean;
   costUsd: number;
   totalTokens: number;
+  error?: string;
+  budgetStatus: BudgetStatus;
+}
+
+export interface RefundResult {
+  ok: boolean;
+  error?: string;
   budgetStatus: BudgetStatus;
 }
 
@@ -277,6 +286,7 @@ export async function reserveBudgetForQuery(params: {
 
 /**
  * Settles completed query with exact tokens reported by DeepSeek.
+ * Strictly verifies database confirmation (error and data.success).
  * Uses official rates ($0.30/M in, $1.20/M out) for settlement.
  */
 export async function settleCompletedQuery(params: {
@@ -303,7 +313,7 @@ export async function settleCompletedQuery(params: {
 
   if (supabaseClient && !reservationId.startsWith('res_')) {
     try {
-      await supabaseClient.rpc('settle_ai_query', {
+      const { data, error } = await supabaseClient.rpc('settle_ai_query', {
         p_ledger_id: reservationId,
         p_user_id: userId,
         p_prompt_tokens: promptTokens,
@@ -312,14 +322,43 @@ export async function settleCompletedQuery(params: {
         p_query_preview: queryPreview ? queryPreview.slice(0, 120) : null,
         p_status: 'completed',
       });
-      const budgetStatus = await getBudgetStatus(userId, supabaseClient, allowTestMemoryFallback);
-      return {
-        costUsd: actualCostUsd,
-        totalTokens,
-        budgetStatus,
-      };
-    } catch {
-      // In tests, proceed to memory settlement
+
+      const resData = data as { success?: boolean; error?: string; message?: string } | null;
+
+      // EXPLICIT VALIDATION: Never report success if PostgreSQL failed or returned success=false
+      if (error || !resData || resData.success !== true) {
+        const errorMsg = error?.message || resData?.message || resData?.error || 'Liquidación rechazada por la base de datos.';
+        if (!isTestEnvironment() && !allowTestMemoryFallback) {
+          const budgetStatus = await getBudgetStatus(userId, supabaseClient, false);
+          return {
+            ok: false,
+            costUsd: 0,
+            totalTokens,
+            error: errorMsg,
+            budgetStatus,
+          };
+        }
+      } else {
+        const budgetStatus = await getBudgetStatus(userId, supabaseClient, allowTestMemoryFallback);
+        return {
+          ok: true,
+          costUsd: actualCostUsd,
+          totalTokens,
+          budgetStatus,
+        };
+      }
+    } catch (err: unknown) {
+      if (!isTestEnvironment() && !allowTestMemoryFallback) {
+        const errorObj = err as Error;
+        const budgetStatus = await getBudgetStatus(userId, supabaseClient, false);
+        return {
+          ok: false,
+          costUsd: 0,
+          totalTokens,
+          error: errorObj?.message || 'Excepción durante liquidación en PostgreSQL.',
+          budgetStatus,
+        };
+      }
     }
   }
 
@@ -336,6 +375,7 @@ export async function settleCompletedQuery(params: {
         }
         const budgetStatus = computeInMemoryBudget(userId);
         resolve({
+          ok: true,
           costUsd: actualCostUsd,
           totalTokens,
           budgetStatus,
@@ -345,14 +385,17 @@ export async function settleCompletedQuery(params: {
   }
 
   return {
-    costUsd: actualCostUsd,
+    ok: false,
+    costUsd: 0,
     totalTokens,
+    error: 'budget_unavailable',
     budgetStatus: defaultUnavailableBudgetStatus(),
   };
 }
 
 /**
- * Refunds reservation when provider call fails, errors, or times out.
+ * Refunds reservation when provider call fails before execution or API key is missing.
+ * Strictly verifies database confirmation (error and data.success).
  */
 export async function refundFailedQuery(params: {
   reservationId: string;
@@ -360,12 +403,12 @@ export async function refundFailedQuery(params: {
   reason?: string;
   supabaseClient?: SupabaseBudgetClient | null;
   allowTestMemoryFallback?: boolean;
-}): Promise<BudgetStatus> {
+}): Promise<RefundResult> {
   const { reservationId, userId, reason, supabaseClient, allowTestMemoryFallback = false } = params;
 
   if (supabaseClient && !reservationId.startsWith('res_')) {
     try {
-      await supabaseClient.rpc('settle_ai_query', {
+      const { data, error } = await supabaseClient.rpc('settle_ai_query', {
         p_ledger_id: reservationId,
         p_user_id: userId,
         p_prompt_tokens: 0,
@@ -374,9 +417,36 @@ export async function refundFailedQuery(params: {
         p_query_preview: reason ? reason.slice(0, 120) : null,
         p_status: 'refunded',
       });
-      return await getBudgetStatus(userId, supabaseClient, allowTestMemoryFallback);
-    } catch {
-      // Ignore
+
+      const resData = data as { success?: boolean; error?: string; message?: string } | null;
+
+      if (error || !resData || resData.success !== true) {
+        const errorMsg = error?.message || resData?.message || resData?.error || 'Reembolso rechazado por la base de datos.';
+        if (!isTestEnvironment() && !allowTestMemoryFallback) {
+          const budgetStatus = await getBudgetStatus(userId, supabaseClient, false);
+          return {
+            ok: false,
+            error: errorMsg,
+            budgetStatus,
+          };
+        }
+      } else {
+        const budgetStatus = await getBudgetStatus(userId, supabaseClient, allowTestMemoryFallback);
+        return {
+          ok: true,
+          budgetStatus,
+        };
+      }
+    } catch (err: unknown) {
+      if (!isTestEnvironment() && !allowTestMemoryFallback) {
+        const errorObj = err as Error;
+        const budgetStatus = await getBudgetStatus(userId, supabaseClient, false);
+        return {
+          ok: false,
+          error: errorObj?.message || 'Excepción durante reembolso en PostgreSQL.',
+          budgetStatus,
+        };
+      }
     }
   }
 
@@ -390,12 +460,19 @@ export async function refundFailedQuery(params: {
           entry.status = 'refunded';
         }
         const budgetStatus = computeInMemoryBudget(userId);
-        resolve(budgetStatus);
+        resolve({
+          ok: true,
+          budgetStatus,
+        });
       });
     });
   }
 
-  return defaultUnavailableBudgetStatus();
+  return {
+    ok: false,
+    error: 'budget_unavailable',
+    budgetStatus: defaultUnavailableBudgetStatus(),
+  };
 }
 
 /**

@@ -168,13 +168,14 @@ test('5. Reembolso de reserva cuando la llamada al proveedor falla o falta la AP
   assert.equal(statusBefore.currentMonthSpentUsd, RESERVATION_AMOUNT_USD);
 
   // Falla la consulta (error de proveedor o API key)
-  const statusAfterRefund = await refundFailedQuery({
+  const refundResult = await refundFailedQuery({
     reservationId: reservation.reservationId,
     userId,
     reason: 'provider_timeout',
   });
 
-  assert.equal(statusAfterRefund.currentMonthSpentUsd, 0, 'La reserva debe liberarse en su totalidad');
+  assert.equal(refundResult.ok, true);
+  assert.equal(refundResult.budgetStatus.currentMonthSpentUsd, 0, 'La reserva debe liberarse en su totalidad');
 });
 
 test('6. Sanitización contra Prompt Injection en notas de operaciones', () => {

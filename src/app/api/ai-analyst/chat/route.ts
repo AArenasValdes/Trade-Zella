@@ -9,6 +9,7 @@ import {
   settleCompletedQuery,
   refundFailedQuery,
   getBudgetStatus,
+  RESERVATION_AMOUNT_USD,
 } from '@/services/ai-budget-service';
 import {
   buildAnalystGroundingContext,
@@ -112,12 +113,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Environment defaults strictly to Real (V3 segregation compliant)
-  const targetEnv: TradeSourceType | 'All' =
+  // Environment defaults strictly to Real. Does not consolidate environments into 'All'.
+  const targetEnv: TradeSourceType =
     body.environment === 'backtest' ||
     body.environment === 'demo' ||
-    body.environment === 'unclassified' ||
-    body.environment === 'All'
+    body.environment === 'unclassified'
       ? body.environment
       : 'real';
 
@@ -204,6 +204,13 @@ export async function POST(req: NextRequest) {
     const availableIds = new Set(tradeLookup.keys());
     const referencedTradeIds = extractReferencedTradeIds(chatResult.answer, availableIds);
 
+    // CRITICAL: If PostgreSQL failed to confirm settlement, DO NOT REFUND!
+    // DeepSeek was already called and billed. The reservation remains active in 'reserved'
+    // status to conservatively protect the $5.00 monthly cap.
+    if (!settlement.ok) {
+      console.warn('AI query settlement unconfirmed in PostgreSQL:', settlement.error);
+    }
+
     return NextResponse.json({
       answer: chatResult.answer,
       referencedTradeIds,
@@ -211,15 +218,17 @@ export async function POST(req: NextRequest) {
         promptTokens: chatResult.promptTokens,
         completionTokens: chatResult.completionTokens,
         totalTokens: chatResult.totalTokens,
-        estimatedCostUsd: settlement.costUsd,
+        estimatedCostUsd: settlement.ok ? settlement.costUsd : RESERVATION_AMOUNT_USD,
       },
       budget: settlement.budgetStatus,
+      ...(settlement.ok ? {} : { ledgerWarning: 'Gasto retenido como reserva comprometida pendiente de conciliación.' }),
     });
   } catch (err: unknown) {
     const errorObj = err as Error;
     const errorMessage = errorObj?.message || 'Error al comunicarse con el proveedor DeepSeek Flash.';
 
-    // Refund reservation on any failure
+    // DeepSeek call failed before completion (timeout, invalid request, or network error).
+    // Attempt refund of the upfront reservation.
     await refundFailedQuery({
       reservationId: reservation.reservationId,
       userId: user.id,

@@ -11,6 +11,10 @@ import { isTradeIncludedInAggregates, hasValidRMultiple } from './financial-engi
 export const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
 export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-flash';
 
+// Hard upper bound on input tokens to guarantee reservation covers 100% of maximum possible cost
+export const MAX_INPUT_TOKENS_LIMIT = 8000;
+export const MAX_OUTPUT_TOKENS_LIMIT = 800;
+
 /**
  * Sanitizes user trade notes to neutralize prompt injection vectors
  * and truncate excessive character payloads.
@@ -33,11 +37,11 @@ export function sanitizeNotesForPrompt(notes?: string | null): string {
 /**
  * Generates verified quantitative grounding context from user trades.
  * Reuses existing Martin OS engines without inventing statistics.
- * Defaults strictly to Real environment.
+ * Defaults strictly to Real environment. Segregates Real from Backtesting.
  */
 export function buildAnalystGroundingContext(
   trades: readonly Trade[],
-  targetEnv: TradeSourceType | 'All' = 'real'
+  targetEnv: TradeSourceType = 'real'
 ): {
   systemPrompt: string;
   sampleSummary: {
@@ -55,22 +59,22 @@ export function buildAnalystGroundingContext(
     tradeLookup.set(t.id, t);
   }
 
-  // Filter by requested environment. Real is default.
-  const filteredTrades = targetEnv === 'All'
-    ? [...trades]
-    : trades.filter((t) => (t.sourceType || 'unclassified') === targetEnv);
-
+  // Filter strictly by requested environment. Real is default.
+  // Never merge or consolidate Real with Backtesting into a single aggregate.
+  const filteredTrades = trades.filter((t) => (t.sourceType || 'unclassified') === targetEnv);
   const validTrades = filteredTrades.filter(isTradeIncludedInAggregates);
   const validRTrades = validTrades.filter(hasValidRMultiple);
 
-  // Cohort calculations
-  const globalCohort = calculateCohortMetrics('primary', `Entorno: ${targetEnv}`, 'environment', filteredTrades);
+  // Cohort calculations for active target environment
+  const primaryCohort = calculateCohortMetrics('primary', `Entorno: ${targetEnv}`, 'environment', filteredTrades);
   const modelComp = calculateModelComparison(filteredTrades);
   const windowComp = calculateWindowComparison(filteredTrades);
   const psychologyBreakdown = calculatePsychologyBreakdown(filteredTrades);
+
+  // Separate, independent cohorts for Real vs Backtest comparison
   const backtestVsReal = calculateBacktestVsRealComparison(trades as Trade[]);
 
-  // Count by environment
+  // Count by environment across entire platform
   const realCount = trades.filter((t) => (t.sourceType || 'unclassified') === 'real').length;
   const backtestCount = trades.filter((t) => t.sourceType === 'backtest').length;
   const demoCount = trades.filter((t) => t.sourceType === 'demo').length;
@@ -89,8 +93,8 @@ export function buildAnalystGroundingContext(
     return `#${idx + 1} [trade:${t.id}] | ${t.entryDate.slice(0, 10)} | ${t.symbol} | ${t.direction} | ${t.status} | ${rStr} | ${t.pdArrays?.[0] || 'Sin modelo'} | ${env} | Tag: ${tag} | Nota: "${notesStr}"`;
   });
 
-  const pfString = globalCohort.profitFactorR !== null
-    ? `${globalCohort.profitFactorR}`
+  const pfString = primaryCohort.profitFactorR !== null
+    ? `${primaryCohort.profitFactorR}`
     : 'N/A (sin pérdidas registradas)';
 
   const prompt = `Eres el Analista Cuantitativo de Martin OS, asistente inteligente especializado en la metodología de trading ICT (Inner Circle Trader) y gestión de riesgo en R-Múltiplos de Martín.
@@ -100,7 +104,7 @@ REGLAS ABSOLUTAS DE INTEGRIDAD Y SEGURIDAD:
 2. CITACIÓN DE OPERACIONES: Cuando menciones una operación específica para ilustrar una conclusión, incluye SIEMPRE la etiqueta exacta [trade:ID] (por ejemplo: "[trade:4fa2b8]"), lo cual permite a Martín abrir la ficha técnica del trade directamente en la interfaz.
 3. SEGREGACIÓN DE ENTORNOS:
    - El entorno predeterminado evaluado es Real.
-   - Si se solicita comparar Real con Backtesting, compara ambas cohortes de forma independiente y paralela. JAMÁS sumes, promedies ni consolides la rentabilidad, P&L o R acumulado de Backtest con la operativa Real.
+   - Si se solicita comparar Real con Backtesting, analiza ambas cohortes de forma estrictamente independiente y paralela. JAMÁS sumes, promedies ni consolides la rentabilidad, P&L o R acumulado de Backtest con la operativa Real.
 4. TAMAÑO MUESTRAL Y ADVERTENCIA:
    - Menciona siempre el tamaño muestral (N) y el entorno evaluado.
    - Si una cohorte o modelo tiene N < 10, advierte explícitamente: "Muestra pequeña (N < 10) — interpretar con cautela".
@@ -115,12 +119,12 @@ REGLAS ABSOLUTAS DE INTEGRIDAD Y SEGURIDAD:
 ENTORNO ACTIVO ANALIZADO: ${targetEnv.toUpperCase()}
 - Total Operaciones: ${filteredTrades.length} (Válidas para métricas: ${validTrades.length}, con R verificado: ${validRTrades.length})
 - Distribución General de Entornos: Real (${realCount}), Backtesting (${backtestCount}), Demo (${demoCount}), Sin clasificar (${unclassifiedCount})
-- Win Rate: ${globalCohort.winRate}% (TP: ${globalCohort.winsCount}, SL: ${globalCohort.lossesCount})
-- Expectativa Matemática en R: ${globalCohort.expectancyR}R por operación
+- Win Rate: ${primaryCohort.winRate}% (TP: ${primaryCohort.winsCount}, SL: ${primaryCohort.lossesCount})
+- Expectativa Matemática en R: ${primaryCohort.expectancyR}R por operación
 - Profit Factor en R: ${pfString}
-- Ganancia Media en R (TP): +${globalCohort.avgWinR}R | Pérdida Media en R (SL): -${globalCohort.avgLossR}R
-- Total R Acumulado: ${globalCohort.totalR}R
-- Máximo Drawdown en R: -${globalCohort.maxDrawdownR ?? 0}R
+- Ganancia Media en R (TP): +${primaryCohort.avgWinR}R | Pérdida Media en R (SL): -${primaryCohort.avgLossR}R
+- Total R Acumulado: ${primaryCohort.totalR}R
+- Máximo Drawdown en R: -${primaryCohort.maxDrawdownR ?? 0}R
 
 COMPARATIVA POR MODELO OPERATIVO (${targetEnv}):
 - Breaker Block: N=${modelComp.breakerBlock.totalTrades}, WR=${modelComp.breakerBlock.winRate}%, Exp=${modelComp.breakerBlock.expectancyR}R, TotalR=${modelComp.breakerBlock.totalR}R, MaxDD=-${modelComp.breakerBlock.maxDrawdownR ?? 0}R
@@ -135,7 +139,7 @@ VENTANAS HORARIAS NUEVA YORK (${targetEnv}):
 ETIQUETAS PSICOLÓGICAS Y CONTEXTO (${targetEnv}):
 ${psychologyBreakdown.length > 0 ? psychologyBreakdown.map((p) => `- ${p.label}: N=${p.totalTrades}, WR=${p.winRate}%, Exp=${p.expectancyR}R, SLs=${p.lossesCount}`).join('\n') : 'Sin etiquetas psicológicas registradas.'}
 
-COMPARATIVA BACKTESTING VS REAL (Cohortes segregadas):
+COMPARATIVA BACKTESTING VS REAL (Cohortes segregadas independientes):
 - Real (N=${backtestVsReal.realCohort.totalTrades}, WR=${backtestVsReal.realCohort.winRate}%, Exp=${backtestVsReal.realCohort.expectancyR}R, TotalR=${backtestVsReal.realCohort.totalR}R)
 - Backtesting (N=${backtestVsReal.backtestCohort.totalTrades}, WR=${backtestVsReal.backtestCohort.winRate}%, Exp=${backtestVsReal.backtestCohort.expectancyR}R, TotalR=${backtestVsReal.backtestCohort.totalR}R)
 - Diagnóstico descriptivo: ${backtestVsReal.verdict.description}
@@ -194,6 +198,7 @@ export interface DeepSeekChatResponse {
 /**
  * Executes a single, cost-bounded chat completion call to DeepSeek Flash.
  * No tool loops, no reasoning thinking tokens, 800 tokens max response.
+ * Enforces hard token context ceiling before making outbound request.
  */
 export async function callDeepSeekFlash(params: {
   apiKey: string;
@@ -214,6 +219,15 @@ export async function callDeepSeekFlash(params: {
     throw new Error('DEEPSEEK_API_KEY no está configurada en las variables de entorno del servidor.');
   }
 
+  // Pre-flight validation: Ensure input context does not exceed 8,000 tokens limit.
+  // Using conservative character-to-token ratio (3.5 chars/token).
+  const estimatedInputTokens = Math.ceil((systemPrompt.length + userMessage.length) / 3.5);
+  if (estimatedInputTokens > MAX_INPUT_TOKENS_LIMIT) {
+    throw new Error(
+      `El contexto de entrada (${estimatedInputTokens} tokens estimados) excede el límite máximo de ${MAX_INPUT_TOKENS_LIMIT} tokens.`
+    );
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -231,7 +245,7 @@ export async function callDeepSeekFlash(params: {
           { role: 'user', content: userMessage.slice(0, 1000) },
         ],
         thinking: { type: 'disabled' }, // Explicitly disabled thinking mode
-        max_tokens: 800,
+        max_tokens: MAX_OUTPUT_TOKENS_LIMIT,
         temperature: 0.2,
       }),
       signal: controller.signal,

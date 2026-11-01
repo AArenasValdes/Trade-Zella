@@ -6,10 +6,14 @@ import path from 'node:path';
 import { createClient } from '@supabase/supabase-js';
 import {
   reserveBudgetForQuery,
+  settleCompletedQuery,
   getBudgetStatus,
+  RESERVATION_AMOUNT_USD,
 } from '../src/services/ai-budget-service.ts';
 import {
   buildAnalystGroundingContext,
+  callDeepSeekFlash,
+  MAX_INPUT_TOKENS_LIMIT,
 } from '../src/services/ai-analyst-service.ts';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://wotwtunkwkevoqguoebk.supabase.co';
@@ -142,11 +146,7 @@ test('1. Prueba de reservas concurrentes contra PostgreSQL real: pg_advisory_xac
       VALUES ('${user1}', '${testMonth}', 4.000000, 0.000000, 'completed');
     `);
 
-    // 3. Simulate two parallel competing reservations:
-    // Process A wants $0.60
-    // Process B wants $0.60
-    // Total remaining budget is $1.00 ($5.00 - $4.00). Both cannot pass!
-    // Running concurrent execution in PostgreSQL via parallel DO blocks or sequential simulation
+    // 3. Competing parallel reservations near hard cap
     const resA = runDbQuery(`SELECT ${testSchema}.test_reserve_ai_query('${user1}', '${testMonth}', 0.600000) as result;`);
     const resB = runDbQuery(`SELECT ${testSchema}.test_reserve_ai_query('${user2}', '${testMonth}', 0.600000) as result;`);
 
@@ -169,7 +169,6 @@ test('1. Prueba de reservas concurrentes contra PostgreSQL real: pg_advisory_xac
     `);
     assert.equal(Number(totalCheck[0].total), 4.60);
   } finally {
-    // 4. Always drop test schema completely
     try {
       runDbQuery(`DROP SCHEMA IF EXISTS ${testSchema} CASCADE;`);
     } catch {}
@@ -183,7 +182,6 @@ test('2. Prueba de aislamiento entre dos usuarios: User A no accede ni contamina
   const userA = '11111111-1111-1111-1111-111111111111';
   const userB = '22222222-2222-2222-2222-222222222222';
 
-  // Trades belong strictly to User A
   const userATrades = [
     {
       id: 'trade-a-1',
@@ -201,17 +199,14 @@ test('2. Prueba de aislamiento entre dos usuarios: User A no accede ni contamina
     },
   ];
 
-  // Grounding context generated for User A only contains User A trades
   const contextA = buildAnalystGroundingContext(userATrades, 'real');
   assert.equal(contextA.sampleSummary.totalTrades, 1);
   assert.ok(contextA.systemPrompt.includes('trade-a-1'));
 
-  // User B's grounding with empty or distinct trades has zero leakage
   const contextB = buildAnalystGroundingContext([], 'real');
   assert.equal(contextB.sampleSummary.totalTrades, 0);
   assert.equal(contextB.systemPrompt.includes('trade-a-1'), false, 'El contexto de User B no debe contener trades de User A');
 
-  // Verify daily limit isolation: User A's rate limits do not count against User B
   const clientMock = {
     rpc: async (name, args) => {
       if (name === 'reserve_ai_query') {
@@ -228,7 +223,7 @@ test('2. Prueba de aislamiento entre dos usuarios: User A no accede ni contamina
         return {
           data: {
             billing_month: '2026-11',
-            today_queries: isUserA ? 20 : 0, // User A maxed out, User B fresh
+            today_queries: isUserA ? 20 : 0,
             max_daily_queries: 20,
             current_month_spent_usd: 1.50,
             max_monthly_budget_usd: 5.0,
@@ -257,14 +252,12 @@ test('2. Prueba de aislamiento entre dos usuarios: User A no accede ni contamina
 test('3. Prueba de falla de Supabase: debe bloquear DeepSeek inmediatamente (fail-closed)', async () => {
   const userId = 'fail-closed-test-user';
 
-  // Client that simulates database failure or unreachable server
   const brokenClient = {
     rpc: async () => {
       throw new Error('Database connection refused (503 Service Unavailable)');
     },
   };
 
-  // In production mode (allowTestMemoryFallback = false), a broken client must fail-closed
   const result = await reserveBudgetForQuery({
     userId,
     supabaseClient: brokenClient,
@@ -283,18 +276,14 @@ test('3. Prueba de falla de Supabase: debe bloquear DeepSeek inmediatamente (fai
 test('4. Prueba de manipulación directa de RPC: cliente anon/público debe ser denegado', async () => {
   const anonClient = createClient(SUPABASE_URL, ANON_KEY);
 
-  // Attempting to invoke reserve_ai_query directly as anon client
   const { data, error } = await anonClient.rpc('reserve_ai_query', {
     p_user_id: '00000000-0000-0000-0000-000000000000',
     p_billing_month: '2026-11',
     p_reserve_amount: 0.01,
   });
 
-  // Because the migration revokes execute permissions from public/anon/authenticated:
-  // PostgREST will reject with 401/403 or "function not found / permission denied"
   assert.ok(error !== null || data === null, 'La invocación directa desde cliente público no debe tener éxito');
   if (error) {
-    // Permission denied or function not accessible via PostgREST schema cache
     assert.ok(
       error.message.includes('permission') ||
       error.message.includes('denied') ||
@@ -304,4 +293,125 @@ test('4. Prueba de manipulación directa de RPC: cliente anon/público debe ser 
       error.code === 'PGRST301'
     );
   }
+});
+
+// -----------------------------------------------------------------------------
+// Test 5: Unconfirmed or Failed Settlement handling (does NOT claim false success)
+// -----------------------------------------------------------------------------
+test('5. Prueba de liquidación fallida: RPC con error o success=false NO reporta liquidación exitosa', async () => {
+  const userId = 'user-settle-fail';
+  const reservationId = '00000000-0000-0000-0000-000000000099';
+
+  // Client simulating an RPC failure or rejection by PostgreSQL
+  const rejectingClient = {
+    rpc: async (name) => {
+      if (name === 'settle_ai_query') {
+        return {
+          data: { success: false, error: 'invalid_reservation', message: 'Reserva no encontrada o ya liquidada' },
+          error: null,
+        };
+      }
+      if (name === 'get_ai_budget_summary') {
+        return {
+          data: {
+            billing_month: '2026-11',
+            today_queries: 1,
+            max_daily_queries: 20,
+            current_month_spent_usd: RESERVATION_AMOUNT_USD, // reservation remains committed
+            max_monthly_budget_usd: 5.0,
+            remaining_budget_usd: 5.0 - RESERVATION_AMOUNT_USD,
+            is_daily_limit_reached: false,
+            is_monthly_budget_reached: false,
+          },
+          error: null,
+        };
+      }
+      return { data: null, error: null };
+    },
+  };
+
+  const settlement = await settleCompletedQuery({
+    reservationId,
+    userId,
+    promptTokens: 1000,
+    completionTokens: 200,
+    supabaseClient: rejectingClient,
+    allowTestMemoryFallback: false,
+  });
+
+  // Must report ok: false and NOT report successful settlement
+  assert.equal(settlement.ok, false, 'No debe reportar liquidación exitosa si PostgreSQL rechazó');
+  assert.ok(settlement.error.includes('Reserva no encontrada'));
+  // And the budget still considers the reservation committed ($0.010 USD retained)
+  assert.equal(settlement.budgetStatus.currentMonthSpentUsd, RESERVATION_AMOUNT_USD);
+});
+
+// -----------------------------------------------------------------------------
+// Test 6: Pending reservations are retained in budget and not automatically released
+// -----------------------------------------------------------------------------
+test('6. Prueba de reservas pendientes: se conservan en cómputo mensual para no exceder $5.00', async () => {
+  const userId = 'user-pending-res-test';
+
+  const clientWithPendingRes = {
+    rpc: async (name) => {
+      if (name === 'get_ai_budget_summary') {
+        return {
+          data: {
+            billing_month: '2026-11',
+            today_queries: 5,
+            max_daily_queries: 20,
+            current_month_spent_usd: 4.995000, // completed + pending reservations sum up to $4.995
+            max_monthly_budget_usd: 5.0,
+            remaining_budget_usd: 0.005000,
+            is_daily_limit_reached: false,
+            is_monthly_budget_reached: false,
+          },
+          error: null,
+        };
+      }
+      if (name === 'reserve_ai_query') {
+        // Next reservation of $0.010 would exceed $5.00 ($4.995 + $0.010 = $5.005 > $5.00)
+        return {
+          data: {
+            success: false,
+            error: 'budget_exceeded',
+            message: 'Presupuesto mensual de IA alcanzado ($5.00 USD).',
+          },
+          error: null,
+        };
+      }
+      return { data: null, error: null };
+    },
+  };
+
+  const reservation = await reserveBudgetForQuery({
+    userId,
+    supabaseClient: clientWithPendingRes,
+    allowTestMemoryFallback: false,
+  });
+
+  assert.equal(reservation.ok, false, 'Debe bloquear sobregasto cuando las reservas pendientes cubren el saldo');
+  assert.equal(reservation.error, 'budget_exceeded');
+  assert.ok(reservation.message.includes('$5.00 USD'));
+});
+
+// -----------------------------------------------------------------------------
+// Test 7: Context token ceiling enforcement in callDeepSeekFlash
+// -----------------------------------------------------------------------------
+test('7. Cota efectiva de tokens de entrada: callDeepSeekFlash rechaza antes de llamar a la red si excede 8.000 tokens', async () => {
+  // Generate massive prompt exceeding 8,000 tokens (> 28,000 chars)
+  const oversizedSystemPrompt = 'A'.repeat(30000);
+
+  await assert.rejects(
+    async () => {
+      await callDeepSeekFlash({
+        apiKey: 'sk-test-key-valid',
+        systemPrompt: oversizedSystemPrompt,
+        userMessage: 'pregunta normal',
+      });
+    },
+    {
+      message: new RegExp(`excede el límite máximo de ${MAX_INPUT_TOKENS_LIMIT} tokens`),
+    }
+  );
 });

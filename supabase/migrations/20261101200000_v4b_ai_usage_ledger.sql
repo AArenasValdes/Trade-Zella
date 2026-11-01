@@ -73,16 +73,8 @@ BEGIN
   -- This serializes concurrent reservations across all instances and eliminates race conditions.
   PERFORM pg_advisory_xact_lock(hashtext('ai_budget_month_' || v_billing_month));
 
-  -- Clean up stale reservations older than 5 minutes (e.g. crashed serverless lambdas)
-  -- to release reserved budget back into the shared pool.
-  UPDATE public.ai_usage_ledger
-  SET
-    status = 'refunded',
-    reserved_cost_usd = 0.000000,
-    updated_at = now()
-  WHERE billing_month = v_billing_month
-    AND status = 'reserved'
-    AND request_timestamp < (now() - INTERVAL '5 minutes');
+  -- Conservative ledger policy: Pending reservations ('reserved') are NOT automatically
+  -- forgiven or refunded without confirmation, ensuring the $5.00 hard cap is never breached.
 
   -- 1. Check daily rate limit for this user (Max 20 queries/day)
   SELECT COUNT(*)
@@ -172,12 +164,28 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_updated_rows INTEGER;
   v_normalized_status TEXT := LOWER(TRIM(COALESCE(p_status, 'refunded')));
   v_actual_cost NUMERIC(10, 6) := GREATEST(COALESCE(p_actual_cost_usd, 0.000000), 0.000000);
+  v_reserved_cost NUMERIC(10, 6);
+  v_updated_rows INTEGER;
 BEGIN
   IF v_normalized_status NOT IN ('completed', 'refunded', 'failed') THEN
     v_normalized_status := 'refunded';
+  END IF;
+
+  -- Verify reservation exists and belongs to the user
+  SELECT reserved_cost_usd INTO v_reserved_cost
+  FROM public.ai_usage_ledger
+  WHERE id = p_ledger_id
+    AND user_id = p_user_id
+    AND status = 'reserved';
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object(
+      'success', false,
+      'error', 'invalid_reservation',
+      'message', 'No se encontró una reserva pendiente válida para este usuario y ledger id.'
+    );
   END IF;
 
   UPDATE public.ai_usage_ledger
@@ -200,7 +208,7 @@ BEGIN
     RETURN jsonb_build_object(
       'success', false,
       'error', 'invalid_reservation',
-      'message', 'No se encontró una reserva pendiente válida para este usuario y ledger id.'
+      'message', 'La reserva ya fue liquidada o cancelada previamente.'
     );
   END IF;
 
@@ -208,7 +216,8 @@ BEGIN
     'success', true,
     'ledger_id', p_ledger_id,
     'status', v_normalized_status,
-    'actual_cost_usd', CASE WHEN v_normalized_status = 'completed' THEN v_actual_cost ELSE 0.000000 END
+    'actual_cost_usd', CASE WHEN v_normalized_status = 'completed' THEN v_actual_cost ELSE 0.000000 END,
+    'reserved_cost_usd', v_reserved_cost
   );
 END;
 $$;
@@ -244,7 +253,7 @@ BEGIN
       AND status IN ('reserved', 'completed');
   END IF;
 
-  -- Aggregate total spent across all users for this billing month
+  -- Aggregate total spent across all users for this billing month (completed + pending reservations)
   SELECT COALESCE(SUM(
     CASE 
       WHEN status = 'completed' THEN estimated_cost_usd
