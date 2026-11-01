@@ -4,7 +4,6 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useTrading } from '@/context/TradingContext';
 import { TIME_ZONES } from '@/config/time-zones';
 import {
-  convertTimeBetweenZones,
   extractNyDateKey,
   extractNyTime,
   getDateKeyInTimeZone,
@@ -13,52 +12,23 @@ import {
 import {
   calculateDailyReturnPct,
   calculateMonthlyReturnPct,
-  calculateTradeReturnPct,
+  resolveTradeReturnPct,
   formatReturnPct,
+  isTradeIncludedInAggregates,
+  hasValidRMultiple,
 } from '@/services/financial-engine';
-import type { HTFTimeframe, Killzone, Trade, DailyJournalNote } from '@/types/trading';
-import { HTF_TIMEFRAMES, KILLZONES } from '@/config/ict-constants';
+import type { Trade } from '@/types/trading';
 import {
   Calendar as CalendarIcon,
   ChevronLeft,
   ChevronRight,
-  BookOpen,
   X,
-  Save,
   Plus,
-  Trash2,
-  AlertTriangle,
 } from 'lucide-react';
 
 interface CalendarViewProps {
   onInspectTrade: (trade: Trade) => void;
   onOpenNewTradeForDate: (dateKey: string) => void;
-}
-
-const createEmptySessionNote = (date: string): DailyJournalNote => ({
-  date,
-  preMarketBias: 'Neutral',
-  dolTarget: '',
-  highImpactNews: '',
-  preMarketNotes: '',
-  postMarketReview: '',
-  followedDailyRules: false,
-  timeframeContext: Object.fromEntries(
-    HTF_TIMEFRAMES.map((timeframe) => [timeframe, { bias: 'Neutral', notes: '' }])
-  ),
-  sessionWindow: KILLZONES[0],
-  noTrade: false,
-  noTradeReason: '',
-  completedRuleIds: [],
-});
-
-function formatSessionWindowBothZones(date: string, sessionWindow: Killzone): string {
-  const range = sessionWindow.match(/\((\d{2}:\d{2})-(\d{2}:\d{2})\)/);
-  if (!range) return 'Sin ventana horaria definida';
-  const [, startNy, endNy] = range;
-  const startLocal = convertTimeBetweenZones(date, startNy, TIME_ZONES.trading, TIME_ZONES.user);
-  const endLocal = convertTimeBetweenZones(date, endNy, TIME_ZONES.trading, TIME_ZONES.user);
-  return `NY ${startNy}–${endNy} · Chile ${startLocal}–${endLocal}`;
 }
 
 export function CalendarView({
@@ -68,18 +38,11 @@ export function CalendarView({
   const {
     trades,
     accounts,
-    dailyNotes,
-    personalRules,
-    saveDailyNote,
-    addPersonalRule,
-    updatePersonalRule,
-    deletePersonalRule,
     theme,
   } = useTrading();
   const [calMonth, setCalMonth] = useState<string | null>(null);
   const [todayDate, setTodayDate] = useState<string | null>(null);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
-  const [showNoTradeWarning, setShowNoTradeWarning] = useState(false);
   const previousTodayDate = useRef<string | null>(null);
 
   useEffect(() => {
@@ -99,21 +62,25 @@ export function CalendarView({
     return () => window.clearInterval(intervalId);
   }, []);
 
-  const [noteForm, setNoteForm] = useState<DailyJournalNote>(() => createEmptySessionNote(''));
-  const [newRuleText, setNewRuleText] = useState('');
-
   const calendarData = useMemo(() => {
     const map: Record<
       string,
-      { pnl: number; returnPct: number | null; count: number; wins: number; trades: Trade[] }
+      { pnl: number; sumR: number; hasMonetary: boolean; returnPct: number | null; count: number; wins: number; trades: Trade[] }
     > = {};
     trades.forEach((t) => {
       const day = extractNyDateKey(t.entryDate) || t.entryDate.slice(0, 10);
-      if (!map[day]) map[day] = { pnl: 0, returnPct: null, count: 0, wins: 0, trades: [] };
-      map[day].pnl = Number((map[day].pnl + t.netPnl).toFixed(2));
-      map[day].count += 1;
-      if (t.netPnl > 0) map[day].wins += 1;
+      if (!map[day]) map[day] = { pnl: 0, sumR: 0, hasMonetary: false, returnPct: null, count: 0, wins: 0, trades: [] };
       map[day].trades.push(t);
+      if (!isTradeIncludedInAggregates(t)) return;
+      if (t.calculationMode !== 'unrecorded') {
+        map[day].pnl = Number((map[day].pnl + t.netPnl).toFixed(2));
+        map[day].hasMonetary = true;
+      }
+      if (hasValidRMultiple(t)) {
+        map[day].sumR = Number((map[day].sumR + t.rMultiple).toFixed(2));
+      }
+      map[day].count += 1;
+      if (t.status === 'Win' || t.netPnl > 0) map[day].wins += 1;
     });
 
     Object.values(map).forEach((entry) => {
@@ -129,10 +96,12 @@ export function CalendarView({
         daysInMonth: 0,
         firstDayWeekday: 0,
         monthlyPnl: 0,
+        monthlySumR: 0,
+        hasMonthlyMonetary: false,
         monthlyReturnPct: null as number | null,
         greenDays: 0,
         redDays: 0,
-        weeklySummaries: [] as Array<{weekStart: string; weekEnd: string; count: number; returnPct: number | null; pnl: number}>,
+        weeklySummaries: [] as Array<{weekStart: string; weekEnd: string; count: number; returnPct: number | null; pnl: number; hasMonetary: boolean; sumR: number}>,
         weekendTrades: [] as Trade[],
       };
     }
@@ -140,30 +109,37 @@ export function CalendarView({
     const [year, month] = calMonth.split('-').map(Number);
     const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
     const firstWeekday = (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() + 6) % 7;
-    // When a month starts on Saturday/Sunday, its first business day starts a new row.
     const firstDayWeekday = firstWeekday < 5 ? firstWeekday : 0;
 
     let monthlyPnl = 0;
+    let monthlySumR = 0;
+    let hasMonthlyMonetary = false;
     let greenDays = 0;
     let redDays = 0;
     const monthlyTrades: Trade[] = [];
 
     Object.entries(map).forEach(([dateKey, info]) => {
       if (dateKey.startsWith(calMonth)) {
-        monthlyPnl += info.pnl;
+        if (info.hasMonetary) {
+          monthlyPnl += info.pnl;
+          hasMonthlyMonetary = true;
+        }
+        monthlySumR += info.sumR;
         monthlyTrades.push(...info.trades);
-        if (info.pnl > 0) greenDays++;
-        else if (info.pnl < 0) redDays++;
+
+        const isGreen = info.returnPct !== null ? info.returnPct > 0 : (info.hasMonetary ? info.pnl > 0 : info.sumR > 0);
+        const isRed = info.returnPct !== null ? info.returnPct < 0 : (info.hasMonetary ? info.pnl < 0 : info.sumR < 0);
+        if (isGreen) greenDays++;
+        else if (isRed) redDays++;
       }
     });
 
     const monthlyReturnPct = calculateMonthlyReturnPct(monthlyTrades, accounts);
 
-    // Group actual NY-dated trades by Monday. Weekend history remains in totals,
-    // even though weekends are hidden from the calendar grid.
     const weekBuckets = new Map<string, Trade[]>();
     const weekendTrades: Trade[] = [];
     for (const trade of monthlyTrades) {
+      if (!isTradeIncludedInAggregates(trade)) continue;
       const nyDate = extractNyDateKey(trade.entryDate) || trade.entryDate.slice(0, 10);
       if (!isValidDateKey(nyDate)) continue;
       const [tradeYear, tradeMonth, tradeDay] = nyDate.split('-').map(Number);
@@ -177,17 +153,29 @@ export function CalendarView({
       const key = monday.toISOString().slice(0, 10);
       weekBuckets.set(key, [...(weekBuckets.get(key) ?? []), trade]);
     }
+
     const weeklySummaries = Array.from(weekBuckets, ([weekStart, weeklyTrades]) => {
       const [sy, sm, sd] = weekStart.split('-').map(Number);
       const mon = new Date(Date.UTC(sy, sm - 1, sd));
       const sun = new Date(mon.getTime() + 6 * 86400000);
       const weekEnd = sun.toISOString().slice(0, 10);
+      const monetary = weeklyTrades.filter((t) => t.calculationMode !== 'unrecorded');
+      const pnl = monetary.reduce((sum, trade) => sum + trade.netPnl, 0);
+      const sumR = Number(
+        weeklyTrades
+          .filter(hasValidRMultiple)
+          .reduce((sum, trade) => sum + trade.rMultiple, 0)
+          .toFixed(2)
+      );
+
       return {
         weekStart,
         weekEnd,
         count: weeklyTrades.length,
         returnPct: calculateMonthlyReturnPct(weeklyTrades, accounts),
-        pnl: weeklyTrades.reduce((sum, trade) => sum + trade.netPnl, 0),
+        pnl: Number(pnl.toFixed(2)),
+        hasMonetary: monetary.length > 0,
+        sumR,
       };
     }).sort((a, b) => a.weekStart.localeCompare(b.weekStart));
 
@@ -196,6 +184,8 @@ export function CalendarView({
       daysInMonth,
       firstDayWeekday,
       monthlyPnl: Number(monthlyPnl.toFixed(2)),
+      monthlySumR: Number(monthlySumR.toFixed(2)),
+      hasMonthlyMonetary,
       monthlyReturnPct,
       greenDays,
       redDays,
@@ -215,55 +205,12 @@ export function CalendarView({
 
   const handleDayClick = (dateStr: string) => {
     setSelectedDay(dateStr);
-    setShowNoTradeWarning(false);
-    const existing = dailyNotes[dateStr];
-    setNoteForm({
-      ...createEmptySessionNote(dateStr),
-      ...existing,
-      date: dateStr,
-      timeframeContext: {
-        ...createEmptySessionNote(dateStr).timeframeContext,
-        ...existing?.timeframeContext,
-      },
-      completedRuleIds: existing?.completedRuleIds || [],
-    });
-  };
-
-  const handleSaveNote = (e: React.FormEvent) => {
-    e.preventDefault();
-    saveDailyNote({
-      ...noteForm,
-      followedDailyRules:
-        personalRules.length > 0 &&
-        personalRules.every((rule) => noteForm.completedRuleIds?.includes(rule.id)),
-    });
-    setSelectedDay(null);
-    setShowNoTradeWarning(false);
   };
 
   const selectedDayInfo = selectedDay ? calendarData.map[selectedDay] : undefined;
   const selectedDayTrades = selectedDayInfo?.trades || [];
   const selectedDayPnl = selectedDayInfo?.pnl || 0;
   const selectedDayReturnPct = selectedDayInfo?.returnPct ?? null;
-  const isSelectedDayNoTrade = Boolean(
-    (selectedDay && dailyNotes[selectedDay]?.noTrade) || noteForm.noTrade
-  );
-
-  const handleRegisterExecutionClick = () => {
-    if (!selectedDay) return;
-    if (isSelectedDayNoTrade) {
-      setShowNoTradeWarning(true);
-      return;
-    }
-    onOpenNewTradeForDate(selectedDay);
-  };
-
-  const handleConfirmRegisterOverNoTrade = () => {
-    if (!selectedDay) return;
-    setShowNoTradeWarning(false);
-    setNoteForm((prev) => ({ ...prev, noTrade: false }));
-    onOpenNewTradeForDate(selectedDay);
-  };
 
   if (!calMonth || !todayDate) {
     return (
@@ -274,6 +221,18 @@ export function CalendarView({
       />
     );
   }
+
+  const isMonthlyGreen = calendarData.monthlyReturnPct !== null
+    ? calendarData.monthlyReturnPct > 0
+    : calendarData.hasMonthlyMonetary
+    ? calendarData.monthlyPnl > 0
+    : calendarData.monthlySumR > 0;
+
+  const isMonthlyRed = calendarData.monthlyReturnPct !== null
+    ? calendarData.monthlyReturnPct < 0
+    : calendarData.hasMonthlyMonetary
+    ? calendarData.monthlyPnl < 0
+    : calendarData.monthlySumR < 0;
 
   return (
     <div className="space-y-6">
@@ -308,14 +267,19 @@ export function CalendarView({
           <div className="flex flex-wrap items-center gap-2 text-xs font-bold tabular-nums sm:gap-4">
             <span
               className={`px-3 py-1 rounded-lg border ${
-                calendarData.monthlyPnl > 0
+                isMonthlyGreen
                   ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                  : calendarData.monthlyPnl < 0
+                  : isMonthlyRed
                   ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
                   : 'bg-zinc-800/40 text-zinc-300 border-white/10'
               }`}
             >
-              Retorno Mes: {formatReturnPct(calendarData.monthlyReturnPct, { fallback: `${calendarData.monthlyPnl >= 0 ? '+' : ''}$${calendarData.monthlyPnl}` })}
+              Retorno Mes:{' '}
+              {calendarData.monthlyReturnPct !== null
+                ? formatReturnPct(calendarData.monthlyReturnPct)
+                : calendarData.hasMonthlyMonetary && calendarData.monthlyPnl !== 0
+                ? `${calendarData.monthlyPnl >= 0 ? '+' : '-'}$${Math.abs(calendarData.monthlyPnl).toFixed(2)} USD`
+                : `${calendarData.monthlySumR >= 0 ? '+' : ''}${calendarData.monthlySumR.toFixed(2)}R`}
             </span>
             <span className="text-emerald-400">
               {calendarData.greenDays} Días TP
@@ -339,17 +303,26 @@ export function CalendarView({
             <p className="text-xs text-zinc-500">Sin operaciones registradas este mes.</p>
           ) : (
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-              {calendarData.weeklySummaries.map((week) => (
-                <div key={week.weekStart} className="rounded-lg border border-white/[0.07] bg-zinc-900/60 p-2.5">
-                  <p className="text-[11px] text-zinc-400">
-                    Semana {week.weekStart.slice(8, 10)}/{week.weekStart.slice(5, 7)} – {week.weekEnd.slice(8, 10)}/{week.weekEnd.slice(5, 7)}
-                  </p>
-                  <strong className={`text-sm tabular-nums ${week.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {formatReturnPct(week.returnPct, {fallback: `${week.pnl >= 0 ? '+' : '-'}$${Math.abs(week.pnl).toFixed(2)}`})}
-                  </strong>
-                  <p className="text-[10px] text-zinc-500">{week.count} {week.count === 1 ? 'trade' : 'trades'}</p>
-                </div>
-              ))}
+              {calendarData.weeklySummaries.map((week) => {
+                const isWeekGreen = week.returnPct !== null ? week.returnPct > 0 : (week.hasMonetary ? week.pnl > 0 : week.sumR > 0);
+                const isWeekRed = week.returnPct !== null ? week.returnPct < 0 : (week.hasMonetary ? week.pnl < 0 : week.sumR < 0);
+
+                return (
+                  <div key={week.weekStart} className="rounded-lg border border-white/[0.07] bg-zinc-900/60 p-2.5">
+                    <p className="text-[11px] text-zinc-400">
+                      Semana {week.weekStart.slice(8, 10)}/{week.weekStart.slice(5, 7)} – {week.weekEnd.slice(8, 10)}/{week.weekEnd.slice(5, 7)}
+                    </p>
+                    <strong className={`text-sm tabular-nums ${isWeekGreen ? 'text-emerald-400' : isWeekRed ? 'text-rose-400' : 'text-zinc-300'}`}>
+                      {week.returnPct !== null
+                        ? formatReturnPct(week.returnPct)
+                        : week.hasMonetary && week.pnl !== 0
+                        ? `${week.pnl >= 0 ? '+' : '-'}$${Math.abs(week.pnl).toFixed(2)}`
+                        : `${week.sumR >= 0 ? '+' : ''}${week.sumR.toFixed(2)}R`}
+                    </strong>
+                    <p className="text-[10px] text-zinc-500">{week.count} {week.count === 1 ? 'trade' : 'trades'}</p>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -377,8 +350,10 @@ export function CalendarView({
               const dateStr = `${calMonth}-${dayNum}`;
               const isToday = dateStr === todayDate;
               const dayData = calendarData.map[dateStr];
-              const hasNote = Boolean(dailyNotes[dateStr]);
-              const markedNoTrade = Boolean(dailyNotes[dateStr]?.noTrade);
+
+              const hasTrades = Boolean(dayData && dayData.count > 0);
+              const isGreen = Boolean(dayData && (dayData.returnPct !== null ? dayData.returnPct > 0 : (dayData.hasMonetary ? dayData.pnl > 0 : dayData.sumR > 0)));
+              const isRed = Boolean(dayData && (dayData.returnPct !== null ? dayData.returnPct < 0 : (dayData.hasMonetary ? dayData.pnl < 0 : dayData.sumR < 0)));
 
               return (
                 <div
@@ -395,11 +370,11 @@ export function CalendarView({
                       : undefined
                   }
                   className={`h-28 rounded-xl p-2.5 border transition-all flex flex-col justify-between cursor-pointer hover:border-white/30 ${
-                    !dayData
+                    !hasTrades
                       ? 'bg-zinc-900/40 border-white/[0.05] text-zinc-500'
-                      : dayData.pnl > 0
+                      : isGreen
                       ? 'bg-emerald-500/10 border-emerald-500/25'
-                      : dayData.pnl < 0
+                      : isRed
                       ? 'bg-rose-500/10 border-rose-500/25'
                       : 'bg-zinc-800/40 border-white/[0.1]'
                   }`}
@@ -412,22 +387,9 @@ export function CalendarView({
                           Hoy
                         </span>
                       )}
-                      {hasNote && (
-                        <span title="Contiene Nota Pre-Market">
-                          <BookOpen
-                            aria-hidden="true"
-                            className={`w-3.5 h-3.5 ${theme.accentTextClass}`}
-                          />
-                        </span>
-                      )}
                     </span>
-                    {markedNoTrade && (
-                      <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[8px] font-bold text-amber-300">
-                        Sin trade
-                      </span>
-                    )}
                     <div className="flex items-center gap-1">
-                      {dayData && (
+                      {dayData && dayData.count > 0 && (
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/50 text-zinc-300 border border-white/[0.06]">
                           {dayData.count}t
                         </span>
@@ -447,20 +409,22 @@ export function CalendarView({
                     </div>
                   </div>
 
-                  {dayData && (
+                  {dayData && dayData.count > 0 && (
                     <div className="text-right">
                       <div
                         className={`text-sm font-extrabold tabular-nums ${
-                          dayData.pnl > 0
+                          isGreen
                             ? 'text-emerald-400'
-                            : dayData.pnl < 0
+                            : isRed
                             ? 'text-rose-400'
                             : 'text-zinc-300'
                         }`}
                       >
-                        {formatReturnPct(dayData.returnPct, {
-                          fallback: dayData.pnl >= 0 ? `+$${dayData.pnl.toFixed(0)}` : `-$${Math.abs(dayData.pnl).toFixed(0)}`,
-                        })}
+                        {dayData.returnPct !== null
+                          ? formatReturnPct(dayData.returnPct)
+                          : dayData.hasMonetary && dayData.pnl !== 0
+                          ? `${dayData.pnl >= 0 ? '+' : '-'}$${Math.abs(dayData.pnl).toFixed(0)}`
+                          : `${dayData.sumR >= 0 ? '+' : ''}${dayData.sumR.toFixed(2)}R`}
                       </div>
                       <div className="text-[10px] text-zinc-400">
                         {Math.round((dayData.wins / dayData.count) * 100)}% WR
@@ -488,17 +452,14 @@ export function CalendarView({
             <div className="flex items-center justify-between pb-3 border-b border-white/[0.08]">
               <div>
                 <h3 className="text-lg font-bold text-white">
-                  Notebook Diario NY — {selectedDay}
+                  Operaciones del Día NY — {selectedDay}
                 </h3>
                 <p className="text-xs text-zinc-400">
-                  Preparación de Contexto Mayor (1D·4H·2H·30m) y registro de ejecuciones del día
+                  Inspecciona las operaciones ejecutadas en esta jornada o registra una nueva.
                 </p>
               </div>
               <button
-                onClick={() => {
-                  setSelectedDay(null);
-                  setShowNoTradeWarning(false);
-                }}
+                onClick={() => setSelectedDay(null)}
                 aria-label="Cerrar detalle del día"
                 className="p-1.5 rounded-lg text-zinc-400 hover:bg-white/5 cursor-pointer"
               >
@@ -515,363 +476,112 @@ export function CalendarView({
                   <span className="text-[11px] text-zinc-400">
                     {selectedDayTrades.length === 0
                       ? `Sin operaciones registradas en ${selectedDay}`
-                      : `Retorno Día: ${formatReturnPct(selectedDayReturnPct)} (${
-                          selectedDayPnl >= 0
-                            ? `+$${selectedDayPnl.toFixed(2)}`
-                            : `-$${Math.abs(selectedDayPnl).toFixed(2)}`
-                        } USD) · Selecciona una operación para inspeccionar o editar`}
+                      : `Retorno Día: ${
+                          selectedDayReturnPct !== null
+                            ? formatReturnPct(selectedDayReturnPct)
+                            : selectedDayInfo?.hasMonetary && selectedDayPnl !== 0
+                            ? `${selectedDayPnl >= 0 ? '+' : ''}$${selectedDayPnl.toFixed(2)} USD`
+                            : `${(selectedDayInfo?.sumR ?? 0) >= 0 ? '+' : ''}${(selectedDayInfo?.sumR ?? 0).toFixed(2)}R`
+                        } · Selecciona una operación para inspeccionarla`}
                   </span>
                 </div>
                 <button
                   type="button"
-                  onClick={handleRegisterExecutionClick}
+                  onClick={() => {
+                    const day = selectedDay;
+                    setSelectedDay(null);
+                    onOpenNewTradeForDate(day);
+                  }}
                   className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer ${theme.buttonClass}`}
                 >
                   <Plus className="w-4 h-4 stroke-[2.5]" />
-                  Registrar ejecución
+                  Registrar operación
                 </button>
               </div>
 
-              {showNoTradeWarning && (
-                <div
-                  role="alert"
-                  className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs text-amber-200 space-y-2.5"
-                >
-                  <div className="flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                    <div className="space-y-1">
-                      <strong className="block text-amber-100">
-                        Este día ({selectedDay}) está marcado como «No Trade» (Hoy decidí no operar)
-                      </strong>
-                      <p className="text-amber-200/90 leading-relaxed">
-                        {noteForm.noTradeReason || dailyNotes[selectedDay]?.noTradeReason
-                          ? `Motivo registrado: "${noteForm.noTradeReason || dailyNotes[selectedDay]?.noTradeReason}". `
-                          : ''}
-                        Tus notas pre-mercado, lectura HTF y revisión post-sesión se conservarán intactas. ¿Deseas abrir el formulario de registro y resolver el estado «No Trade» al guardar la ejecución?
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowNoTradeWarning(false)}
-                      className="px-3 py-1.5 rounded-lg border border-white/10 bg-zinc-900/80 text-zinc-300 hover:bg-zinc-800 font-semibold cursor-pointer"
-                    >
-                      Mantener «No Trade»
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleConfirmRegisterOverNoTrade}
-                      className="px-3 py-1.5 rounded-lg bg-amber-400 text-zinc-950 hover:bg-amber-300 font-bold cursor-pointer"
-                    >
-                      Continuar al registro
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {selectedDayTrades.length > 0 && (
+              {selectedDayTrades.length > 0 ? (
                 <div className="space-y-1.5 pt-1">
-                  {selectedDayTrades.map((t) => (
-                    <div
-                      key={t.id}
-                      onClick={() => {
-                        setSelectedDay(null);
-                        setShowNoTradeWarning(false);
-                        onInspectTrade(t);
-                      }}
-                      className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-white/[0.08] cursor-pointer text-xs"
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-mono text-[11px] text-zinc-400">
-                          {t.timePrecision === 'window'
-                            ? `${t.operationalWindow === 'window_2' ? '10:35–11:00' : '09:30–10:35'} NY (Ventana)`
-                            : `${extractNyTime(t.entryDate)} NY`}
-                        </span>
-                        <strong className="text-white">{t.symbol}</strong>
-                        <span className="px-2 py-0.5 rounded bg-black/50 text-zinc-300 font-semibold">
-                          {t.direction}
-                        </span>
-                        <span className="text-zinc-400">{t.killzone}</span>
-                      </div>
-                      <span
-                        className={`font-bold tabular-nums ${
-                          t.netPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                        }`}
-                      >
-                        {formatReturnPct(
-                          calculateTradeReturnPct(
-                            t.netPnl,
-                            accounts.find((a) => a.id === t.accountId)?.initialBalance
-                          ),
-                          { fallback: t.netPnl >= 0 ? `+$${t.netPnl}` : `-$${Math.abs(t.netPnl)}` }
-                        )}{' '}
-                        ({t.rMultiple}R)
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                  {selectedDayTrades.map((t) => {
+                    const acc = accounts.find((a) => a.id === t.accountId);
+                    const retPct = resolveTradeReturnPct(t, acc?.initialBalance);
+                    const isUnrecorded = t.calculationMode === 'unrecorded';
 
-            <form onSubmit={handleSaveNote} className="space-y-3">
-              <p className="text-xs text-zinc-400">
-                Fecha de sesión seleccionada: <strong className="text-zinc-200">{selectedDay}</strong>
-              </p>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                <div>
-                  <label className="block text-xs font-semibold text-zinc-400 mb-1">
-                    Dirección HTF (1D/4H)
-                  </label>
-                  <select
-                    value={noteForm.preMarketBias}
-                    onChange={(e) =>
-                      setNoteForm({
-                        ...noteForm,
-                        preMarketBias: e.target.value as DailyJournalNote['preMarketBias'],
-                      })
-                    }
-                    className="w-full px-3 py-2 text-xs rounded-xl bg-zinc-900 border border-white/10 text-zinc-100"
-                  >
-                    <option value="Bullish">Bullish (Alcista)</option>
-                    <option value="Bearish">Bearish (Bajista)</option>
-                    <option value="Neutral">Neutral / Rango</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-zinc-400 mb-1">
-                    Target Liquidez (DOL)
-                  </label>
-                  <input
-                    type="text"
-                    value={noteForm.dolTarget}
-                    onChange={(e) =>
-                      setNoteForm({ ...noteForm, dolTarget: e.target.value })
-                    }
-                    placeholder="Ej: PDH 21580 / Low 4H"
-                    className="w-full px-3 py-2 text-xs rounded-xl bg-zinc-900 border border-white/10 text-zinc-100"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-rose-400 mb-1">
-                    Noticias NY (08:30 / 10:00)
-                  </label>
-                  <input
-                    type="text"
-                    value={noteForm.highImpactNews}
-                    onChange={(e) =>
-                      setNoteForm({
-                        ...noteForm,
-                        highImpactNews: e.target.value,
-                      })
-                    }
-                    placeholder="Ej: CPI 8:30 / FOMC"
-                    className="w-full px-3 py-2 text-xs rounded-xl bg-zinc-900 border border-white/10 text-zinc-100"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div>
-                  <label className="mb-1 block text-xs font-semibold text-zinc-400">Ventana de operación (NY)</label>
-                  <select
-                    value={noteForm.sessionWindow || KILLZONES[0]}
-                    onChange={(e) => setNoteForm((prev) => ({ ...prev, sessionWindow: e.target.value as Killzone }))}
-                    className="w-full rounded-xl border border-white/10 bg-zinc-900 px-3 py-2 text-xs text-zinc-100"
-                  >
-                    {KILLZONES.map((window) => <option key={window} value={window}>{window}</option>)}
-                  </select>
-                  <p className="mt-1 text-[11px] text-zinc-500">{formatSessionWindowBothZones(selectedDay || noteForm.date, noteForm.sessionWindow || KILLZONES[0])}</p>
-                </div>
-                <div className="space-y-2">
-                  <label className="flex items-center gap-2 text-xs font-semibold text-zinc-300">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(noteForm.noTrade)}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        if (!checked) setShowNoTradeWarning(false);
-                        setNoteForm((prev) => ({
-                          ...prev,
-                          noTrade: checked,
-                          noTradeReason: checked ? prev.noTradeReason : '',
-                        }));
-                      }}
-                      className="accent-amber-400"
-                    />
-                    Hoy decidí no operar
-                  </label>
-                  <select
-                    value={noteForm.noTradeReason || ''}
-                    disabled={!noteForm.noTrade}
-                    onChange={(e) => setNoteForm((prev) => ({ ...prev, noTradeReason: e.target.value }))}
-                    className="w-full rounded-xl border border-white/10 bg-zinc-900 px-3 py-2 text-xs text-zinc-100 disabled:opacity-40"
-                  >
-                    <option value="">Motivo (opcional)</option>
-                    <option value="No apareció un setup válido">No apareció un setup válido</option>
-                    <option value="Contexto HTF desalineado">Contexto HTF desalineado</option>
-                    <option value="Fuera de mi ventana NY">Fuera de mi ventana NY</option>
-                    <option value="Límite de riesgo o cuenta">Límite de riesgo o cuenta</option>
-                    <option value="Otro">Otro</option>
-                  </select>
-                </div>
-              </div>
-
-              <section className="space-y-2 rounded-xl border border-white/[0.08] bg-zinc-950/50 p-3">
-                <div>
-                  <h4 className="text-xs font-bold text-zinc-200">Lectura por temporalidad</h4>
-                  <p className="text-[11px] text-zinc-500">Tu criterio para cada marco. No hay una dirección predeterminada.</p>
-                </div>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {HTF_TIMEFRAMES.map((timeframe: HTFTimeframe) => {
-                    const entry = noteForm.timeframeContext?.[timeframe] || { bias: 'Neutral' as const, notes: '' };
                     return (
-                      <div key={timeframe} className="rounded-lg border border-white/[0.06] p-2.5">
-                        <div className="mb-2 flex items-center justify-between gap-2">
-                          <strong className="text-xs text-zinc-200">{timeframe}</strong>
-                          <select
-                            aria-label={`Sesgo ${timeframe}`}
-                            value={entry.bias}
-                            onChange={(e) => setNoteForm((prev) => ({
-                              ...prev,
-                              timeframeContext: {
-                                ...prev.timeframeContext,
-                                [timeframe]: { ...entry, bias: e.target.value as DailyJournalNote['preMarketBias'] },
-                              },
-                            }))}
-                            className="rounded-lg border border-white/10 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-100"
-                          >
-                            <option value="Neutral">Neutral</option>
-                            <option value="Bullish">Alcista</option>
-                            <option value="Bearish">Bajista</option>
-                          </select>
+                      <div
+                        key={t.id}
+                        onClick={() => {
+                          setSelectedDay(null);
+                          onInspectTrade(t);
+                        }}
+                        className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-white/[0.08] cursor-pointer text-xs transition-colors"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-[11px] text-zinc-400">
+                            {t.timePrecision === 'window'
+                              ? `${t.operationalWindow === 'window_2' ? '10:35–11:00' : '09:30–10:35'} NY`
+                              : `${extractNyTime(t.entryDate)} NY`}
+                          </span>
+                          <strong className="text-white">{t.symbol}</strong>
+                          <span className="px-2 py-0.5 rounded bg-black/50 text-zinc-300 font-semibold">
+                            {t.direction}
+                          </span>
+                          <span className="text-zinc-400">{t.pdArrays?.[0] || t.killzone}</span>
+                          {t.durationMinutes && (
+                            <span className="text-[10px] text-zinc-500 font-mono">
+                              {t.durationMinutes} min
+                            </span>
+                          )}
                         </div>
-                        <input
-                          value={entry.notes}
-                          onChange={(e) => setNoteForm((prev) => ({
-                            ...prev,
-                            timeframeContext: {
-                              ...prev.timeframeContext,
-                              [timeframe]: { ...entry, notes: e.target.value },
-                            },
-                          }))}
-                          placeholder="Nivel o lectura (opcional)"
-                          className="w-full rounded-lg border border-white/10 bg-[#09090B] px-2.5 py-2 text-xs text-zinc-100"
-                        />
+                        <div className="text-right">
+                          <span
+                            className={`font-bold tabular-nums block ${
+                              t.status === 'Win' || t.netPnl > 0
+                                ? 'text-emerald-400'
+                                : 'text-rose-400'
+                            }`}
+                          >
+                            {t.rUnrecorded
+                              ? 'Sin R'
+                              : t.rMultiple > 0
+                              ? `+${t.rMultiple}R`
+                              : `${t.rMultiple}R`}
+                            {retPct !== null && (
+                              <span className="ml-1 text-[11px] font-normal text-zinc-400">
+                                ({formatReturnPct(retPct)})
+                              </span>
+                            )}
+                          </span>
+                          {!isUnrecorded && t.netPnl !== 0 ? (
+                            <span className="text-[10px] text-zinc-500 font-mono">
+                              {t.calculationMode === 'derived_r' || t.commissionUnmeasured ? '~' : ''}
+                              {t.netPnl >= 0 ? `+$${t.netPnl.toFixed(2)}` : `-$${Math.abs(t.netPnl).toFixed(2)}`} USD
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-zinc-500 font-mono">
+                              (Métrica en R)
+                            </span>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
                 </div>
-              </section>
+              ) : (
+                <p className="text-xs text-zinc-500 py-6 text-center">
+                  No hay operaciones registradas en este día.
+                </p>
+              )}
+            </div>
 
-              <section className="space-y-2 rounded-xl border border-white/[0.08] bg-zinc-950/50 p-3">
-                <div>
-                  <h4 className="text-xs font-bold text-zinc-200">Mis reglas personales</h4>
-                  <p className="text-[11px] text-zinc-500">Son opcionales y editables. Márcalas para esta sesión si las cumpliste.</p>
-                </div>
-                {personalRules.length === 0 ? (
-                  <p className="text-xs text-zinc-500">Aún no agregas reglas; puedes dejar esta parte vacía.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {personalRules.map((rule) => (
-                      <div key={rule.id} className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={noteForm.completedRuleIds?.includes(rule.id) || false}
-                          onChange={(e) => setNoteForm((prev) => {
-                            const completed = new Set(prev.completedRuleIds || []);
-                            if (e.target.checked) completed.add(rule.id);
-                            else completed.delete(rule.id);
-                            return { ...prev, completedRuleIds: Array.from(completed) };
-                          })}
-                          aria-label={`Marcar regla cumplida: ${rule.text}`}
-                          className="accent-emerald-400"
-                        />
-                        <input
-                          value={rule.text}
-                          onChange={(e) => updatePersonalRule(rule.id, e.target.value)}
-                          aria-label="Editar regla personal"
-                          className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#09090B] px-2.5 py-2 text-xs text-zinc-100"
-                        />
-                        <button type="button" onClick={() => deletePersonalRule(rule.id)} aria-label="Eliminar regla" className="rounded-lg p-2 text-zinc-500 hover:bg-rose-500/10 hover:text-rose-400">
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className="flex gap-2">
-                  <input
-                    value={newRuleText}
-                    onChange={(e) => setNewRuleText(e.target.value)}
-                    placeholder="Escribe una regla propia"
-                    className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#09090B] px-2.5 py-2 text-xs text-zinc-100"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => { addPersonalRule(newRuleText); setNewRuleText(''); }}
-                    disabled={!newRuleText.trim()}
-                    className="rounded-lg border border-white/[0.08] px-3 text-xs font-semibold text-zinc-200 disabled:opacity-40"
-                  >
-                    <Plus className="mr-1 inline h-3.5 w-3.5" />Agregar
-                  </button>
-                </div>
-              </section>
-
-              <div>
-                <label className="block text-xs font-semibold text-zinc-400 mb-1">
-                  Lectura Pre-Mercado (1D · 4H · 2H · 30m)
-                </label>
-                <textarea
-                  rows={3}
-                  value={noteForm.preMarketNotes}
-                  onChange={(e) =>
-                    setNoteForm({ ...noteForm, preMarketNotes: e.target.value })
-                  }
-                  placeholder="¿Qué escenario esperas en la apertura de las 9:30 AM NY?"
-                  className="w-full px-3 py-2 text-xs rounded-xl bg-zinc-900 border border-white/10 text-zinc-100"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-zinc-400 mb-1">
-                  Conclusión Post-Sesión (Gestión en 15m/5m y Psicología)
-                </label>
-                <textarea
-                  rows={3}
-                  value={noteForm.postMarketReview}
-                  onChange={(e) =>
-                    setNoteForm({
-                      ...noteForm,
-                      postMarketReview: e.target.value,
-                    })
-                  }
-                  placeholder="¿Esperaste la alineación completa y respetaste TP/SL directo?"
-                  className="w-full px-3 py-2 text-xs rounded-xl bg-zinc-900 border border-white/10 text-zinc-100"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-3 border-t border-white/[0.08]">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedDay(null);
-                    setShowNoTradeWarning(false);
-                  }}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:bg-white/5 cursor-pointer"
-                >
-                  Cerrar
-                </button>
-                <button
-                  type="submit"
-                  className={`px-5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer ${theme.buttonClass}`}
-                >
-                  <Save className="w-3.5 h-3.5" /> Guardar Notebook
-                </button>
-              </div>
-            </form>
+            <div className="flex justify-end gap-2 pt-2 border-t border-white/[0.08]">
+              <button
+                type="button"
+                onClick={() => setSelectedDay(null)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:bg-white/5 cursor-pointer"
+              >
+                Cerrar
+              </button>
+            </div>
           </div>
         </div>
       )}

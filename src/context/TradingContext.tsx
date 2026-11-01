@@ -104,6 +104,19 @@ function scopedStorageKey(key: string, userId: string) {
   return `${key}_${userId}`;
 }
 
+const TECHNICAL_FALLBACK_ACCOUNT: PropAccount = {
+  id: 'acc-tech-unrecorded',
+  name: 'Cuenta Técnica (Sin capital de referencia)',
+  firm: 'Martin OS Technical',
+  initialBalance: 0,
+  profitTarget: 0,
+  maxDrawdown: 0,
+  dailyLossLimit: 0,
+  isTechnical: true,
+  hasVerifiedBalance: false,
+};
+
+
 export function TradingProvider({
   children,
   userId,
@@ -424,11 +437,12 @@ export function TradingProvider({
 
   const importCSV = useCallback(
     (csvText: string) => {
-      const targetAccount =
-        filters.accountId !== 'All'
-          ? filters.accountId
-          : accounts[0]?.id || 'acc-fp-1';
-      const parsed = parseTradingViewCSV(csvText, targetAccount);
+      let targetAccountId = filters.accountId !== 'All' ? filters.accountId : accounts[0]?.id;
+      if (!targetAccountId) {
+        targetAccountId = TECHNICAL_FALLBACK_ACCOUNT.id;
+        setAccounts((prev) => prev.some((a) => a.id === TECHNICAL_FALLBACK_ACCOUNT.id) ? prev : [TECHNICAL_FALLBACK_ACCOUNT, ...prev]);
+      }
+      const parsed = parseTradingViewCSV(csvText, targetAccountId);
       if (parsed.length > 0) {
         setTrades((prev) => [...parsed, ...prev]);
       }

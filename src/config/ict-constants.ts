@@ -167,17 +167,181 @@ export const ICT_CHECKLIST_ITEMS: string[] = [
   'Ejecución estricta TP o SL (Sin parciales ni Break Even)',
 ];
 
-export const INSTRUMENT_SPECS: Record<
-  string,
-  { pointValue: number; label: string; category: 'Futures' | 'Forex' | 'Metals' | 'Indices' }
-> = {
-  NAS100: { pointValue: 1, label: 'NAS100 CFD Funding Pips ($1/pt por lote)', category: 'Indices' },
-  'NQ1!': { pointValue: 20, label: 'Contrato Actual NQ Futuros ($20/pt)', category: 'Futures' },
-  'MNQ1!': { pointValue: 2, label: 'Micro NQ Futuros ($2/pt)', category: 'Futures' },
-  'ES1!': { pointValue: 50, label: 'E-mini S&P 500 ($50/pt)', category: 'Futures' },
-  US30: { pointValue: 1, label: 'US30 CFD ($1/pt)', category: 'Indices' },
-  XAUUSD: { pointValue: 100, label: 'Oro Spot ($100/lote por $1)', category: 'Metals' },
+export interface InstrumentSpecification {
+  pointValue: number;
+  contractSize: number;
+  tickSize: number;
+  tickValue: number;
+  unitLabel: string;
+  label: string;
+  category: 'Futures' | 'Forex' | 'Metals' | 'Indices';
+}
+
+export const INSTRUMENT_SPECS: Record<string, InstrumentSpecification> = {
+  NAS100: {
+    pointValue: 1,
+    contractSize: 1,
+    tickSize: 1,
+    tickValue: 1,
+    unitLabel: '$1/punto por lote',
+    label: 'NAS100 CFD ($1/pt por lote)',
+    category: 'Indices',
+  },
+  NQ: {
+    pointValue: 20,
+    contractSize: 20,
+    tickSize: 0.25,
+    tickValue: 5,
+    unitLabel: '$20/punto ($5/tick 0.25)',
+    label: 'E-mini Nasdaq Futuros ($20/pt)',
+    category: 'Futures',
+  },
+  'NQ1!': {
+    pointValue: 20,
+    contractSize: 20,
+    tickSize: 0.25,
+    tickValue: 5,
+    unitLabel: '$20/punto ($5/tick 0.25)',
+    label: 'Contrato Actual NQ Futuros ($20/pt)',
+    category: 'Futures',
+  },
+  MNQ: {
+    pointValue: 2,
+    contractSize: 2,
+    tickSize: 0.25,
+    tickValue: 0.5,
+    unitLabel: '$2/punto ($0.50/tick 0.25)',
+    label: 'Micro NQ Futuros ($2/pt)',
+    category: 'Futures',
+  },
+  'MNQ1!': {
+    pointValue: 2,
+    contractSize: 2,
+    tickSize: 0.25,
+    tickValue: 0.5,
+    unitLabel: '$2/punto ($0.50/tick 0.25)',
+    label: 'Micro NQ Futuros ($2/pt)',
+    category: 'Futures',
+  },
+  ES: {
+    pointValue: 50,
+    contractSize: 50,
+    tickSize: 0.25,
+    tickValue: 12.5,
+    unitLabel: '$50/punto ($12.50/tick 0.25)',
+    label: 'E-mini S&P 500 Futuros ($50/pt)',
+    category: 'Futures',
+  },
+  'ES1!': {
+    pointValue: 50,
+    contractSize: 50,
+    tickSize: 0.25,
+    tickValue: 12.5,
+    unitLabel: '$50/punto ($12.50/tick 0.25)',
+    label: 'E-mini S&P 500 Futuros ($50/pt)',
+    category: 'Futures',
+  },
+  MES: {
+    pointValue: 5,
+    contractSize: 5,
+    tickSize: 0.25,
+    tickValue: 1.25,
+    unitLabel: '$5/punto ($1.25/tick 0.25)',
+    label: 'Micro E-mini S&P 500 Futuros ($5/pt)',
+    category: 'Futures',
+  },
+  'MES1!': {
+    pointValue: 5,
+    contractSize: 5,
+    tickSize: 0.25,
+    tickValue: 1.25,
+    unitLabel: '$5/punto ($1.25/tick 0.25)',
+    label: 'Micro E-mini S&P 500 Futuros ($5/pt)',
+    category: 'Futures',
+  },
+  US30: {
+    pointValue: 1,
+    contractSize: 1,
+    tickSize: 1,
+    tickValue: 1,
+    unitLabel: '$1/punto por lote',
+    label: 'US30 CFD ($1/pt)',
+    category: 'Indices',
+  },
+  SP500: {
+    pointValue: 1,
+    contractSize: 1,
+    tickSize: 1,
+    tickValue: 1,
+    unitLabel: '$1/punto por lote',
+    label: 'S&P 500 CFD ($1/pt)',
+    category: 'Indices',
+  },
+  XAUUSD: {
+    pointValue: 100,
+    contractSize: 100,
+    tickSize: 0.01,
+    tickValue: 1,
+    unitLabel: '$100/punto por lote (100 oz, $1/0.01)',
+    label: 'Oro Spot ($100/lote por $1)',
+    category: 'Metals',
+  },
+  EURUSD: {
+    pointValue: 100000,
+    contractSize: 100000,
+    tickSize: 0.0001,
+    tickValue: 10,
+    unitLabel: '$10/pip por lote estándar (100k unidades)',
+    label: 'EUR/USD Forex ($10/pip por lote)',
+    category: 'Forex',
+  },
+  GBPUSD: {
+    pointValue: 100000,
+    contractSize: 100000,
+    tickSize: 0.0001,
+    tickValue: 10,
+    unitLabel: '$10/pip por lote estándar (100k unidades)',
+    label: 'GBP/USD Forex ($10/pip por lote)',
+    category: 'Forex',
+  },
 };
+
+export function getInstrumentSpec(symbol: string): {
+  pointValue: number;
+  contractSize: number;
+  tickSize: number;
+  tickValue: number;
+  unitLabel: string;
+  label: string;
+  category: 'Futures' | 'Forex' | 'Metals' | 'Indices' | 'Custom';
+  verified: boolean;
+} {
+  const clean = symbol.trim().toUpperCase();
+  if (INSTRUMENT_SPECS[clean]) {
+    return { ...INSTRUMENT_SPECS[clean], verified: true };
+  }
+  if (clean.endsWith('1!')) {
+    const base = clean.slice(0, -2);
+    if (INSTRUMENT_SPECS[base]) {
+      return { ...INSTRUMENT_SPECS[base], verified: true };
+    }
+  } else {
+    const with1 = `${clean}1!`;
+    if (INSTRUMENT_SPECS[with1]) {
+      return { ...INSTRUMENT_SPECS[with1], verified: true };
+    }
+  }
+  return {
+    pointValue: 1,
+    contractSize: 1,
+    tickSize: 1,
+    tickValue: 1,
+    unitLabel: 'Sin especificación verificada ($1/pt genérico)',
+    label: `${clean} (Genérico $1/pt no auditado)`,
+    category: 'Custom',
+    verified: false,
+  };
+}
 
 export const DEFAULT_PLAYBOOKS: ICTPlaybook[] = [];
 

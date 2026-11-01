@@ -19,7 +19,9 @@ export type PDArray =
   | 'Key Level';
 
 export type TimePrecision = 'exact' | 'window';
-export type CalculationMode = 'monetary' | 'derived_r';
+export type CalculationMode = 'monetary' | 'derived_r' | 'unrecorded';
+export type PnlProvenance = 'audited' | 'theoretical' | 'derived_r' | 'unrecorded';
+export type ReturnBase = 'constant_initial_capital' | 'r_multiple_only' | 'insufficient_data';
 
 export type PsychologyTag =
   | 'A+ Alineado al Contexto HTF'
@@ -56,6 +58,8 @@ export interface PropAccount {
   profitTarget: number;
   maxDrawdown: number;
   dailyLossLimit: number;
+  isTechnical?: boolean;
+  hasVerifiedBalance?: boolean;
 }
 
 export interface ICTPlaybook {
@@ -118,8 +122,15 @@ export interface Trade {
   timePrecision?: TimePrecision;
   operationalWindow?: 'window_1' | 'window_2' | 'outside';
   calculationMode?: CalculationMode;
+  pnlProvenance?: PnlProvenance;
   commissionUnmeasured?: boolean;
   pricesUnrecorded?: boolean;
+  rUnrecorded?: boolean;
+  planUnrecorded?: boolean;
+  hasDataConflict?: boolean;
+  conflictReasons?: string[];
+  realizedNetReturnPct?: number | null;
+  durationMinutes?: number | null;
 }
 
 export interface TradeFilters {
@@ -133,9 +144,25 @@ export interface TradeFilters {
   dateTo: string;
 }
 
+export interface DataCoverageInfo {
+  totalTrades: number;
+  monetaryTradesCount: number;
+  returnPctTradesCount: number;
+  unrecordedTradesCount: number;
+  rMultipleTradesCount?: number;
+  unrecordedRTradesCount?: number;
+  conflictedTradesCount?: number;
+  includedTradesCount?: number;
+  excludedTradesCount?: number;
+  isPartialCoverage?: boolean;
+  hasVerifiedReferenceCapital: boolean;
+}
+
 export interface DashboardMetrics {
   netPnl: number;
   netReturnPct?: number | null;
+  returnBase?: ReturnBase;
+  isPartialReturn?: boolean;
   grossProfit: number;
   grossLoss: number;
   totalCommissions: number;
@@ -151,6 +178,12 @@ export interface DashboardMetrics {
   winLossRatio: number;
   expectancy: number;
   expectancyPct?: number | null;
+  profitFactorUSD?: number | null;
+  profitFactorR?: number | null;
+  expectancyUSD?: number | null;
+  expectancyR?: number | null;
+  monetarySampleSize?: number;
+  rSampleSize?: number;
   avgRMultiple: number;
   maxDrawdown: number;
   maxDrawdownPct?: number | null;
@@ -165,6 +198,9 @@ export interface DashboardMetrics {
   longStats: { count: number; winRate: number; netPnl: number };
   shortStats: { count: number; winRate: number; netPnl: number };
   radarData: { metric: string; score: number; fullMark: number }[];
+  dataCoverage?: DataCoverageInfo;
+  curveMode?: 'percentage' | 'r_multiple';
+  totalRMultiple?: number;
 }
 
 export interface RiskCalculationInput {
