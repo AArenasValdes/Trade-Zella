@@ -690,18 +690,18 @@ export function calculateBacktestVsRealComparison(
       'No se registran operaciones en Real ni en Backtesting en la muestra actual.';
   } else if (!hasSufficientData) {
     verdictStatus = 'insufficient_sample';
-    verdictTitle = 'Muestra insuficiente para concluir concordancia';
-    verdictDescription = `Se requiere un mínimo de 10 operaciones con R conocido en ambos entornos para evaluar concordancia estadística fiable (Real n_R=${realCohort.rSampleSize}, Backtest n_R=${backtestCohort.rSampleSize}). Interpreta cualquier discrepancia preliminar con cautela.`;
+    verdictTitle = 'Muestra preliminar (datos limitados para comparación)';
+    verdictDescription = `Registros actuales con R: Real n_R=${realCohort.rSampleSize}, Backtesting n_R=${backtestCohort.rSampleSize}. Se requieren al menos 10 operaciones por entorno para trazar una comparación descriptiva inicial. Todo dato actual es referencial.`;
   } else {
-    // Both have >= 10 trades with valid R
-    if (expectancyRDelta >= -0.2) {
+    // Both have >= 10 trades with valid R - provide a descriptive, preliminary diagnosis without over-claiming statistical certainty
+    if (expectancyRDelta >= 0) {
       verdictStatus = 'optimal';
-      verdictTitle = 'Alta concordancia operativa entre Backtest y Real';
-      verdictDescription = `La expectativa en Real (${realCohort.expectancyR > 0 ? '+' : ''}${realCohort.expectancyR}R) replica sólidamente la del Backtesting (${backtestCohort.expectancyR > 0 ? '+' : ''}${backtestCohort.expectancyR}R), con una variación de expectativa de ${expectancyRDelta > 0 ? '+' : ''}${expectancyRDelta}R y Drawdown ${drawdownRDelta > 0 ? '+' : ''}${drawdownRDelta}R.`;
+      verdictTitle = 'Diagnóstico descriptivo preliminar: expectativa alineada';
+      verdictDescription = `En la muestra registrada (Real n_R=${realCohort.rSampleSize}, Backtesting n_R=${backtestCohort.rSampleSize}), la expectativa en Real es de ${realCohort.expectancyR > 0 ? '+' : ''}${realCohort.expectancyR}R frente a ${backtestCohort.expectancyR > 0 ? '+' : ''}${backtestCohort.expectancyR}R en Backtesting (delta: ${expectancyRDelta > 0 ? '+' : ''}${expectancyRDelta}R; delta Max DD: ${drawdownRDelta > 0 ? '+' : ''}${drawdownRDelta}R). Corresponde a una comparación descriptiva preliminar sujeta a la ampliación de la muestra.`;
     } else {
       verdictStatus = 'degraded';
-      verdictTitle = 'Degradación observable en Real vs Backtesting';
-      verdictDescription = `La expectativa en Real (${realCohort.expectancyR > 0 ? '+' : ''}${realCohort.expectancyR}R) muestra una caída de ${Math.abs(expectancyRDelta)}R respecto al Backtesting (${backtestCohort.expectancyR > 0 ? '+' : ''}${backtestCohort.expectancyR}R). Revisa posibles desvíos de ejecución, slippage psicológico o selectividad de setups.`;
+      verdictTitle = 'Diagnóstico descriptivo preliminar: menor expectativa en Real';
+      verdictDescription = `En la muestra registrada (Real n_R=${realCohort.rSampleSize}, Backtesting n_R=${backtestCohort.rSampleSize}), la expectativa en Real registra ${realCohort.expectancyR > 0 ? '+' : ''}${realCohort.expectancyR}R frente a ${backtestCohort.expectancyR > 0 ? '+' : ''}${backtestCohort.expectancyR}R en Backtesting (diferencia: ${expectancyRDelta}R; delta Max DD: ${drawdownRDelta > 0 ? '+' : ''}${drawdownRDelta}R). Lectura preliminar descriptiva orientada a auditar la fidelidad de ejecución.`;
     }
   }
 

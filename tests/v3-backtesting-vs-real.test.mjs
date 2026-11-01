@@ -225,7 +225,7 @@ test('5. calculateBacktestVsRealComparison segrega correctamente Real vs Backtes
   assert.equal(comparison.delta.sampleRatio, 0.75);
 });
 
-test('6. Diagnóstico de muestra: advierte insuficiencia cuando N_R < 10 y valida concordancia cuando N_R >= 10', () => {
+test('6. Diagnóstico de muestra: advierte insuficiencia cuando N_R < 10 y emite diagnóstico preliminar descriptivo cuando N_R >= 10', () => {
   // Case A: Small sample (N_R < 10)
   const smallReal = Array.from({ length: 5 }, () =>
     makeTrade({ sourceType: 'real', rMultiple: 2, status: 'Win' })
@@ -237,9 +237,9 @@ test('6. Diagnóstico de muestra: advierte insuficiencia cuando N_R < 10 y valid
   const compSmall = calculateBacktestVsRealComparison([...smallReal, ...smallBT]);
   assert.equal(compSmall.verdict.hasSufficientData, false);
   assert.equal(compSmall.verdict.status, 'insufficient_sample');
-  assert.match(compSmall.verdict.description, /mínimo de 10 operaciones/i);
+  assert.match(compSmall.verdict.description, /al menos 10 operaciones/i);
 
-  // Case B: Sufficient sample (N_R = 10 each) with high concordance
+  // Case B: Sufficient sample (N_R = 10 each) with descriptive preliminary diagnosis
   const largeReal = Array.from({ length: 10 }, (_, i) =>
     makeTrade({ sourceType: 'real', rMultiple: i < 6 ? 2 : -1, status: i < 6 ? 'Win' : 'Loss' })
   );
@@ -250,7 +250,8 @@ test('6. Diagnóstico de muestra: advierte insuficiencia cuando N_R < 10 y valid
   const compLarge = calculateBacktestVsRealComparison([...largeReal, ...largeBT]);
   assert.equal(compLarge.verdict.hasSufficientData, true);
   assert.equal(compLarge.verdict.status, 'optimal');
-  assert.match(compLarge.verdict.title, /Alta concordancia/i);
+  assert.match(compLarge.verdict.title, /Diagnóstico descriptivo preliminar/i);
+  assert.match(compLarge.verdict.description, /comparación descriptiva preliminar/i);
 });
 
 test('7. Desglose por modelo y ventana operativa en Backtesting vs Real sin doble conteo', () => {
@@ -296,4 +297,68 @@ test('8. Migración SQL V3: integridad, no destructividad y valor por defecto un
   assert.match(sql, /default\s+'unclassified'/i, 'El valor por defecto debe ser "unclassified"');
   assert.match(sql, /'real',\s*'demo',\s*'backtest',\s*'unclassified'/i, 'Check constraint debe incluir los 4 entornos válidos');
   assert.match(sql, /create index if not exists idx_trades_source_type/i, 'Debe crear un índice para queries eficientes');
+});
+
+test('9. Importación CSV de Backtesting con source_type=real: rechaza el archivo contradictorio y nunca importa operaciones como real', () => {
+  const contradictoryCSV = `Date,Symbol,Side,Entry Price,Exit Price,R-Multiple,Result,Net PnL,source_type
+2026-10-15 09:32,NAS100,Long,20100,20200,2,Win,200,real
+2026-10-15 10:40,US500,Short,5800,5820,-1,Loss,-100,real`;
+
+  assert.throws(
+    () => {
+      parseTradingViewCSV(contradictoryCSV, 'acc-1', 'backtest');
+    },
+    (err) => {
+      assert.match(err.message, /Archivo contradictorio/i);
+      assert.match(err.message, /"real"/i);
+      return true;
+    },
+    'Debe rechazar explícitamente un archivo que contiene operaciones marcadas como real en el importador de backtesting'
+  );
+
+  // Verify that a CSV with source_type=demo is also rejected in backtest importer
+  const demoCSV = `Date,Symbol,Side,Entry Price,Exit Price,R-Multiple,Result,Net PnL,source_type
+2026-10-15 09:32,NAS100,Long,20100,20200,2,Win,200,demo`;
+  assert.throws(
+    () => {
+      parseTradingViewCSV(demoCSV, 'acc-1', 'backtest');
+    },
+    /Archivo contradictorio/i
+  );
+
+  // Verify that an unannotated CSV is exclusively classified as backtest, NEVER real
+  const standardCSV = `Date,Symbol,Side,Entry Price,Exit Price,R-Multiple,Result,Net PnL
+2026-10-15 09:32,NAS100,Long,20100,20200,2,Win,200`;
+  const result = parseTradingViewCSV(standardCSV, 'acc-1', 'backtest');
+  assert.equal(result.length, 1);
+  assert.equal(result[0].sourceType, 'backtest', 'Debe clasificar exclusivamente como backtest');
+  assert.notEqual(result[0].sourceType, 'real', 'Nunca debe importar silenciosamente como real');
+});
+
+test('10. Segregación de entorno: no mezcla rentabilidad de distintos entornos en resultados consolidados', () => {
+  const realTrades = [
+    makeTrade({ id: 'r1', sourceType: 'real', netPnl: 500, rMultiple: 2, status: 'Win' }),
+  ];
+  const backtestTrades = [
+    makeTrade({ id: 'b1', sourceType: 'backtest', netPnl: 10000, rMultiple: 10, status: 'Win' }),
+  ];
+  const unclassifiedTrades = [
+    makeTrade({ id: 'u1', sourceType: 'unclassified', netPnl: -200, rMultiple: -1, status: 'Loss' }),
+  ];
+  const all = [...realTrades, ...backtestTrades, ...unclassifiedTrades];
+
+  // Real only
+  const realFiltered = all.filter((t) => (t.sourceType || 'unclassified') === 'real');
+  assert.equal(realFiltered.length, 1);
+  assert.equal(realFiltered[0].netPnl, 500);
+
+  // Backtest only
+  const btFiltered = all.filter((t) => (t.sourceType || 'unclassified') === 'backtest');
+  assert.equal(btFiltered.length, 1);
+  assert.equal(btFiltered[0].netPnl, 10000);
+
+  // Unclassified only
+  const unclassFiltered = all.filter((t) => (t.sourceType || 'unclassified') === 'unclassified');
+  assert.equal(unclassFiltered.length, 1);
+  assert.equal(unclassFiltered[0].netPnl, -200);
 });

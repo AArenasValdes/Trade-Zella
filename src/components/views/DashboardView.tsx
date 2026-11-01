@@ -28,6 +28,7 @@ import {
   Award,
   ArrowUpRight,
   ArrowDownRight,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface CustomEquityTooltipProps {
@@ -154,19 +155,22 @@ function CustomEquityTooltip({ active, payload, curveMode = 'percentage' }: Cust
 }
 
 export function DashboardView() {
-  const { trades, accounts, metrics: globalMetrics, theme } = useTrading();
-  type EnvFilterType = 'All' | 'real' | 'demo' | 'backtest' | 'unclassified';
-  const [envFilter, setEnvFilter] = React.useState<EnvFilterType>('All');
+  const { trades, accounts, theme } = useTrading();
+  type EnvFilterType = 'real' | 'demo' | 'backtest' | 'unclassified';
+  const [envFilter, setEnvFilter] = React.useState<EnvFilterType>('real');
+
+  const unclassifiedCount = useMemo(
+    () => trades.filter((t) => !t.sourceType || t.sourceType === 'unclassified').length,
+    [trades]
+  );
 
   const dashboardTrades = useMemo(() => {
-    if (envFilter === 'All') return trades;
     return trades.filter((t) => (t.sourceType || 'unclassified') === envFilter);
   }, [trades, envFilter]);
 
   const metrics = useMemo(() => {
-    if (envFilter === 'All') return globalMetrics;
     return calculateDashboardMetrics(dashboardTrades, accounts);
-  }, [dashboardTrades, accounts, envFilter, globalMetrics]);
+  }, [dashboardTrades, accounts]);
 
   const equityResult = useMemo(() => {
     return calculatePercentageEquityCurve(dashboardTrades, accounts);
@@ -184,7 +188,7 @@ export function DashboardView() {
 
   return (
     <div className="space-y-6">
-      {/* Selector de Entorno: Real / Demo / Backtest / Sin clasificar */}
+      {/* Selector de Entorno: Real (por defecto), Demo, Backtest, Sin clasificar */}
       <div className="bg-[#111114] p-3 rounded-2xl border border-white/[0.08] flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <span className="text-xs font-bold uppercase tracking-wider text-zinc-400">
@@ -192,11 +196,10 @@ export function DashboardView() {
           </span>
           <div className="flex flex-wrap gap-1">
             {[
-              { id: 'All', label: 'Todos', count: trades.length },
               { id: 'real', label: 'Real', count: trades.filter((t) => t.sourceType === 'real').length },
               { id: 'demo', label: 'Demo', count: trades.filter((t) => t.sourceType === 'demo').length },
               { id: 'backtest', label: 'Backtesting', count: trades.filter((t) => t.sourceType === 'backtest').length },
-              { id: 'unclassified', label: 'Sin clasificar', count: trades.filter((t) => !t.sourceType || t.sourceType === 'unclassified').length },
+              { id: 'unclassified', label: 'Sin clasificar', count: unclassifiedCount },
             ].map((item) => {
               const active = envFilter === item.id;
               return (
@@ -217,10 +220,35 @@ export function DashboardView() {
           </div>
         </div>
 
-        {envFilter === 'All' && trades.some((t) => t.sourceType === 'backtest') && trades.some((t) => t.sourceType === 'real') && (
-          <span className="text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-lg">
-            Atención: Vista combinada. Usa los filtros para evaluar Real o Backtest por separado.
-          </span>
+        {unclassifiedCount > 0 && envFilter !== 'unclassified' && (
+          <div className="flex items-center gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 px-3 py-1.5 rounded-xl">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+            <span>
+              Tienes <strong>{unclassifiedCount}</strong> registros históricos en «Sin clasificar».
+            </span>
+            <button
+              type="button"
+              onClick={() => setEnvFilter('unclassified')}
+              className="text-amber-200 underline hover:text-white font-semibold cursor-pointer ml-1"
+            >
+              Ver registros históricos →
+            </button>
+          </div>
+        )}
+
+        {envFilter === 'unclassified' && (
+          <div className="flex items-center gap-2 text-xs text-zinc-300 bg-zinc-900 border border-white/[0.08] px-3 py-1.5 rounded-xl">
+            <span>
+              Viendo registros históricos sin clasificar ({unclassifiedCount} ops). Rentabilidad aislada.
+            </span>
+            <button
+              type="button"
+              onClick={() => setEnvFilter('real')}
+              className="text-emerald-400 underline hover:text-emerald-300 font-semibold cursor-pointer ml-1"
+            >
+              Volver a Real →
+            </button>
+          </div>
         )}
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">

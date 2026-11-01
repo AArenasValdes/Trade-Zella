@@ -24,6 +24,7 @@ import {
   ChevronRight,
   X,
   Plus,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface CalendarViewProps {
@@ -44,6 +45,18 @@ export function CalendarView({
   const [todayDate, setTodayDate] = useState<string | null>(null);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const previousTodayDate = useRef<string | null>(null);
+
+  type EnvFilterType = 'real' | 'demo' | 'backtest' | 'unclassified';
+  const [envFilter, setEnvFilter] = useState<EnvFilterType>('real');
+
+  const unclassifiedCount = useMemo(
+    () => trades.filter((t) => !t.sourceType || t.sourceType === 'unclassified').length,
+    [trades]
+  );
+
+  const calTrades = useMemo(() => {
+    return trades.filter((t) => (t.sourceType || 'unclassified') === envFilter);
+  }, [trades, envFilter]);
 
   useEffect(() => {
     const syncCurrentDate = () => {
@@ -67,7 +80,7 @@ export function CalendarView({
       string,
       { pnl: number; sumR: number; hasMonetary: boolean; returnPct: number | null; count: number; wins: number; trades: Trade[] }
     > = {};
-    trades.forEach((t) => {
+    calTrades.forEach((t) => {
       const day = extractNyDateKey(t.entryDate) || t.entryDate.slice(0, 10);
       if (!map[day]) map[day] = { pnl: 0, sumR: 0, hasMonetary: false, returnPct: null, count: 0, wins: 0, trades: [] };
       map[day].trades.push(t);
@@ -236,6 +249,70 @@ export function CalendarView({
 
   return (
     <div className="space-y-6">
+      {/* Selector de Entorno: Real (por defecto), Demo, Backtest, Sin clasificar */}
+      <div className="bg-[#111114] p-3 rounded-2xl border border-white/[0.08] flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold uppercase tracking-wider text-zinc-400">
+            Entorno:
+          </span>
+          <div className="flex flex-wrap gap-1">
+            {[
+              { id: 'real', label: 'Real', count: trades.filter((t) => t.sourceType === 'real').length },
+              { id: 'demo', label: 'Demo', count: trades.filter((t) => t.sourceType === 'demo').length },
+              { id: 'backtest', label: 'Backtesting', count: trades.filter((t) => t.sourceType === 'backtest').length },
+              { id: 'unclassified', label: 'Sin clasificar', count: unclassifiedCount },
+            ].map((item) => {
+              const active = envFilter === item.id;
+              return (
+                <button
+                  type="button"
+                  key={item.id}
+                  onClick={() => setEnvFilter(item.id as EnvFilterType)}
+                  className={`px-3 py-1 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
+                    active
+                      ? theme.buttonClass
+                      : 'bg-zinc-900 border border-white/[0.06] text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  {item.label} ({item.count})
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {unclassifiedCount > 0 && envFilter !== 'unclassified' && (
+          <div className="flex items-center gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 px-3 py-1.5 rounded-xl">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+            <span>
+              Tienes <strong>{unclassifiedCount}</strong> registros históricos en «Sin clasificar».
+            </span>
+            <button
+              type="button"
+              onClick={() => setEnvFilter('unclassified')}
+              className="text-amber-200 underline hover:text-white font-semibold cursor-pointer ml-1"
+            >
+              Ver registros históricos →
+            </button>
+          </div>
+        )}
+
+        {envFilter === 'unclassified' && (
+          <div className="flex items-center gap-2 text-xs text-zinc-300 bg-zinc-900 border border-white/[0.08] px-3 py-1.5 rounded-xl">
+            <span>
+              Viendo calendario de registros históricos sin clasificar ({unclassifiedCount} ops).
+            </span>
+            <button
+              type="button"
+              onClick={() => setEnvFilter('real')}
+              className="text-emerald-400 underline hover:text-emerald-300 font-semibold cursor-pointer ml-1"
+            >
+              Volver a Real →
+            </button>
+          </div>
+        )}
+      </div>
+
       <div className="bg-[#111114] rounded-2xl p-6 border border-white/[0.08]">
         <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
           <div className="flex flex-wrap items-center gap-3 sm:gap-4">

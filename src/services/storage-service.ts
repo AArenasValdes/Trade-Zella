@@ -234,15 +234,30 @@ export function parseTradingViewCSV(
       row['tipo'] ||
       ''
     ).trim().toLowerCase();
+
     let sourceType: TradeSourceType = defaultSourceType;
-    if (rawSource === 'backtest' || rawSource === 'backtesting' || rawSource === 'simulado' || rawSource === 'sim') {
+
+    if (defaultSourceType === 'backtest') {
+      if (rawSource === 'real' || rawSource === 'live' || rawSource === 'cuenta real') {
+        throw new Error('Archivo contradictorio: el CSV contiene operaciones con entorno "real" pero se intentó importar mediante el importador de Backtesting. Operación cancelada para proteger el registro real.');
+      }
+      if (rawSource === 'demo' || rawSource === 'paper') {
+        throw new Error('Archivo contradictorio: el CSV contiene operaciones con entorno "demo" pero se intentó importar mediante el importador de Backtesting. Operación cancelada.');
+      }
+      // When importing via backtest importer, classify exclusively as backtest
       sourceType = 'backtest';
-    } else if (rawSource === 'demo' || rawSource === 'paper') {
-      sourceType = 'demo';
-    } else if (rawSource === 'real' || rawSource === 'live' || rawSource === 'cuenta real') {
-      sourceType = 'real';
-    } else if (rawSource === 'unclassified' || rawSource === 'sin clasificar') {
-      sourceType = 'unclassified';
+    } else {
+      if (rawSource === 'backtest' || rawSource === 'backtesting' || rawSource === 'simulado' || rawSource === 'sim') {
+        sourceType = 'backtest';
+      } else if (rawSource === 'demo' || rawSource === 'paper') {
+        sourceType = 'demo';
+      } else if (rawSource === 'real' || rawSource === 'live' || rawSource === 'cuenta real') {
+        sourceType = 'real';
+      } else if (rawSource === 'unclassified' || rawSource === 'sin clasificar') {
+        sourceType = 'unclassified';
+      } else {
+        sourceType = defaultSourceType;
+      }
     }
 
     const dedupKey = generateTradeDeduplicationKey({

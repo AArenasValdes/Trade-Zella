@@ -854,7 +854,7 @@ export function AnalyticsView({ onInspectTrade }: AnalyticsViewProps) {
             {!bvrComparison.verdict.hasSufficientData && (
               <div className="pl-7 pt-1">
                 <span className="text-[11px] font-semibold text-amber-400/90 bg-amber-500/15 border border-amber-500/20 px-2.5 py-1 rounded-lg inline-block">
-                  Regla de Confianza: Se requieren mínimo 10 operaciones con R en Real y 10 en Backtesting para emitir un diagnóstico concluyente.
+                  Nota metodológica: Diagnóstico descriptivo y preliminar. El tamaño de muestra actual no constituye validación estadística definitiva.
                 </span>
               </div>
             )}
@@ -1188,18 +1188,18 @@ export function AnalyticsView({ onInspectTrade }: AnalyticsViewProps) {
 
                         <td className="py-3 px-4 text-center">
                           {m.hasSufficientData ? (
-                            m.delta.expectancyRDelta >= -0.2 ? (
+                            m.delta.expectancyRDelta >= 0 ? (
                               <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
-                                Consistente
+                                Alineado (preliminar)
                               </span>
                             ) : (
                               <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-rose-500/15 text-rose-400 border border-rose-500/20">
-                                Degradado
+                                Menor exp. (preliminar)
                               </span>
                             )
                           ) : (
                             <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/20">
-                              Muestra &lt; 10
+                              Muestra preliminar
                             </span>
                           )}
                         </td>
