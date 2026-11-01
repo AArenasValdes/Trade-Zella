@@ -17,6 +17,8 @@ import {
   sanitizeNotesForPrompt,
   extractReferencedTradeIds,
   callDeepSeekFlash,
+  DeepSeekPreflightError,
+  isSafeToRefundDeepSeekFailure,
 } from '../src/services/ai-analyst-service.ts';
 
 function createMockTrade(overrides = {}) {
@@ -287,6 +289,35 @@ test('10. Mock de llamada DeepSeek Flash: modo no-thinking y límite 800 tokens'
     assert.deepEqual(capturedBody.thinking, { type: 'disabled' }, 'thinking debe estar deshabilitado');
     assert.equal(capturedBody.max_tokens, 800, 'max_tokens debe ser 800');
     assert.equal(capturedBody.temperature, 0.2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('11. Preflight seguro: texto Unicode excesivo bloquea antes de la red; timeout posterior no habilita reembolso', async () => {
+  const originalFetch = globalThis.fetch;
+  let networkCalled = false;
+  globalThis.fetch = async () => {
+    networkCalled = true;
+    throw new Error('unexpected fetch');
+  };
+
+  try {
+    await assert.rejects(
+      () => callDeepSeekFlash({
+        apiKey: 'test-key',
+        systemPrompt: 'Operaciones: ' + '💹'.repeat(2500),
+        userMessage: 'Analiza mi rendimiento',
+      }),
+      (error) => {
+        assert.ok(error instanceof DeepSeekPreflightError);
+        assert.equal(isSafeToRefundDeepSeekFailure(error), true);
+        return true;
+      },
+    );
+    assert.equal(networkCalled, false, 'No debe existir llamada facturable si falla el preflight');
+    assert.equal(isSafeToRefundDeepSeekFailure(new Error('Timeout después del envío')), false);
+    assert.equal(isSafeToRefundDeepSeekFailure(new Error('HTTP 502')), false);
   } finally {
     globalThis.fetch = originalFetch;
   }

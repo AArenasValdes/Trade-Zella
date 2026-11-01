@@ -15,6 +15,18 @@ export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-flash';
 export const MAX_INPUT_TOKENS_LIMIT = 8000;
 export const MAX_OUTPUT_TOKENS_LIMIT = 800;
 
+/** Only errors proven to occur before contacting DeepSeek are safe to refund. */
+export class DeepSeekPreflightError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DeepSeekPreflightError';
+  }
+}
+
+export function isSafeToRefundDeepSeekFailure(error: unknown): boolean {
+  return error instanceof DeepSeekPreflightError;
+}
+
 /**
  * Sanitizes user trade notes to neutralize prompt injection vectors
  * and truncate excessive character payloads.
@@ -216,15 +228,19 @@ export async function callDeepSeekFlash(params: {
   } = params;
 
   if (!apiKey || apiKey.trim() === '') {
-    throw new Error('DEEPSEEK_API_KEY no está configurada en las variables de entorno del servidor.');
+    throw new DeepSeekPreflightError('DEEPSEEK_API_KEY no está configurada en las variables de entorno del servidor.');
   }
 
-  // Pre-flight validation: Ensure input context does not exceed 8,000 tokens limit.
-  // Using conservative character-to-token ratio (3.5 chars/token).
-  const estimatedInputTokens = Math.ceil((systemPrompt.length + userMessage.length) / 3.5);
-  if (estimatedInputTokens > MAX_INPUT_TOKENS_LIMIT) {
-    throw new Error(
-      `El contexto de entrada (${estimatedInputTokens} tokens estimados) excede el límite máximo de ${MAX_INPUT_TOKENS_LIMIT} tokens.`
+  // Conservative preflight upper bound: UTF-8 bytes plus room for message overhead.
+  // Unlike chars/3.5, this does not underestimate multilingual or Unicode-rich text.
+  // A token corresponds to at least one input byte for byte-level tokenization.
+  const encoder = new TextEncoder();
+  const inputByteUpperBound =
+    encoder.encode(systemPrompt).length +
+    encoder.encode(userMessage.slice(0, 1000)).length + 256;
+  if (inputByteUpperBound > MAX_INPUT_TOKENS_LIMIT) {
+    throw new DeepSeekPreflightError(
+      `El contexto de entrada supera el límite conservador de ${MAX_INPUT_TOKENS_LIMIT} tokens. Reduce los datos enviados.`
     );
   }
 

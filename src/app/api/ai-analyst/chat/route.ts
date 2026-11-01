@@ -15,6 +15,7 @@ import {
   buildAnalystGroundingContext,
   callDeepSeekFlash,
   extractReferencedTradeIds,
+  isSafeToRefundDeepSeekFailure,
 } from '@/services/ai-analyst-service';
 import type { Trade, TradeSourceType } from '@/types/trading';
 
@@ -227,14 +228,19 @@ export async function POST(req: NextRequest) {
     const errorObj = err as Error;
     const errorMessage = errorObj?.message || 'Error al comunicarse con el proveedor DeepSeek Flash.';
 
-    // DeepSeek call failed before completion (timeout, invalid request, or network error).
-    // Attempt refund of the upfront reservation.
-    await refundFailedQuery({
-      reservationId: reservation.reservationId,
-      userId: user.id,
-      supabaseClient: adminClient,
-      reason: errorMessage,
-    });
+    // Only a validated preflight failure proves no provider call was attempted.
+    // Network errors, HTTP errors and timeouts may occur AFTER DeepSeek billed the
+    // request; preserve the reservation rather than silently understating spend.
+    if (isSafeToRefundDeepSeekFailure(err)) {
+      await refundFailedQuery({
+        reservationId: reservation.reservationId,
+        userId: user.id,
+        supabaseClient: adminClient,
+        reason: errorMessage,
+      });
+    } else {
+      console.warn('DeepSeek request outcome uncertain; AI budget reservation retained.');
+    }
 
     const isQuotaOrBalance =
       errorMessage.includes('saldo') ||
