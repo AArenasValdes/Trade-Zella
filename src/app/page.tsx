@@ -9,6 +9,7 @@ import { DashboardView } from '@/components/views/DashboardView';
 import { JournalView } from '@/components/views/JournalView';
 import { CalendarView } from '@/components/views/CalendarView';
 import { AnalyticsView } from '@/components/views/AnalyticsView';
+import { MonteCarloView } from '@/components/views/MonteCarloView';
 import { PlaybooksView } from '@/components/views/PlaybooksView';
 import { TradeFormModal } from '@/components/modals/TradeFormModal';
 import { TradeInspectorDrawer } from '@/components/modals/TradeInspectorDrawer';
@@ -119,6 +120,8 @@ function TradingWorkspace({ user }: { user: User }) {
                 onInspectTrade={setInspectedTrade}
               />
             )}
+
+            {activeTab === 'monte-carlo' && <MonteCarloView />}
 
             {activeTab === 'playbooks' && <PlaybooksView />}
           </div>

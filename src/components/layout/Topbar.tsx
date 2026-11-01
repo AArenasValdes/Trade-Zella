@@ -70,7 +70,9 @@ export function Topbar({ activeTab, onToggleMobileNav, signedInEmail, onSignOut,
           <h1 className="min-w-0 text-sm font-bold text-zinc-100 tracking-tight sm:text-base">
             {activeTab === 'dashboard' && 'Dashboard & Ratios'}
             {activeTab === 'calendar' && 'Calendario'}
-            {(activeTab === 'analytics' || activeTab === 'playbooks') && 'Análisis de Edge & Estadísticas'}
+            {activeTab === 'analytics' && 'Análisis de Edge & Estadísticas'}
+            {activeTab === 'monte-carlo' && 'Simulador Monte Carlo'}
+            {activeTab === 'playbooks' && 'Playbooks & Setups'}
           </h1>
 
           <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-xl bg-zinc-900 border border-white/[0.08] px-2 py-1 text-[10px] font-mono sm:gap-2 sm:rounded-full sm:px-3 sm:text-xs">
