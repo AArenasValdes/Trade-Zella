@@ -8,9 +8,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --test tests/v1a-certification.test.mjs tests/v1b-simplified-registration.test.mjs tests/v1b-financial-audit.test.mjs tests/v2-edge-analytics.test.mjs",
+    "test": "node --experimental-strip-types --test tests/v1a-certification.test.mjs tests/v1b-simplified-registration.test.mjs tests/v1b-financial-audit.test.mjs tests/v2-edge-analytics.test.mjs tests/v3-backtesting-vs-real.test.mjs",
     "test:v1b": "node --experimental-strip-types --test tests/v1b-simplified-registration.test.mjs tests/v1b-financial-audit.test.mjs",
-    "test:v2": "node --experimental-strip-types --test tests/v2-edge-analytics.test.mjs"
+    "test:v2": "node --experimental-strip-types --test tests/v2-edge-analytics.test.mjs",
+    "test:v3": "node --experimental-strip-types --test tests/v3-backtesting-vs-real.test.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",

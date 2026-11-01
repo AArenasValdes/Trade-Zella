@@ -24,7 +24,8 @@ export type PrimaryEntryModel =
 export interface EdgeCohortMetrics {
   key: string;
   label: string;
-  category: 'model' | 'window' | 'duration' | 'weekday' | 'symbol' | 'psychology';
+  category: 'model' | 'window' | 'duration' | 'weekday' | 'symbol' | 'psychology' | 'environment';
+  maxDrawdownR?: number;
   totalTrades: number; // N
   winsCount: number; // TP
   lossesCount: number; // SL
@@ -68,6 +69,7 @@ export interface AnalyticsFilters {
   symbol: string;
   model: string;
   window: string;
+  sourceType?: string;
 }
 
 export const INITIAL_ANALYTICS_FILTERS: AnalyticsFilters = {
@@ -76,6 +78,7 @@ export const INITIAL_ANALYTICS_FILTERS: AnalyticsFilters = {
   symbol: 'All',
   model: 'All',
   window: 'All',
+  sourceType: 'All',
 };
 
 /**
@@ -172,6 +175,7 @@ export function calculateCohortMetrics(
   let profitFactorR: number | null = null;
   let avgWinR = 0;
   let avgLossR = 0;
+  let maxDrawdownR = 0;
 
   if (rSampleSize > 0) {
     const rWins = rTrades.filter((t) => t.rMultiple > 0);
@@ -195,6 +199,25 @@ export function calculateCohortMetrics(
 
     totalR = Number(rTrades.reduce((acc, t) => acc + t.rMultiple, 0).toFixed(2));
     avgR = Number((totalR / rSampleSize).toFixed(2));
+
+    // Calculate max drawdown in R sequentially
+    const sortedRTrades = [...rTrades].sort(
+      (a, b) => a.entryDate.localeCompare(b.entryDate) || a.id.localeCompare(b.id)
+    );
+    let peakR = 0;
+    let runningR = 0;
+    let maxDDR = 0;
+    for (const t of sortedRTrades) {
+      runningR += t.rMultiple;
+      if (runningR > peakR) {
+        peakR = runningR;
+      }
+      const currentDD = peakR - runningR;
+      if (currentDD > maxDDR) {
+        maxDDR = currentDD;
+      }
+    }
+    maxDrawdownR = Number(maxDDR.toFixed(2));
   }
 
   const isSmallSample = totalTrades < 10;
@@ -220,6 +243,7 @@ export function calculateCohortMetrics(
     avgR,
     expectancyR,
     profitFactorR,
+    maxDrawdownR,
     avgWinR,
     avgLossR,
     isSmallSample,
@@ -253,6 +277,11 @@ export function filterAnalyticsTrades(
     if (filters.window && filters.window !== 'All') {
       const { window } = resolveOperationalWindow(t);
       if (window !== filters.window) return false;
+    }
+
+    if (filters.sourceType && filters.sourceType !== 'All') {
+      const src = t.sourceType || 'unclassified';
+      if (src !== filters.sourceType) return false;
     }
 
     const tradeDate = extractNyDateKey(t.entryDate) || t.entryDate.slice(0, 10);
@@ -517,4 +546,252 @@ export function calculatePsychologyBreakdown(
     });
     return calculateCohortMetrics(`psy_${tag.replace(/\s+/g, '_')}`, tag, 'psychology', tagTrades);
   });
+}
+
+
+export interface EnvironmentDelta {
+  winRateDelta: number; // real.winRate - backtest.winRate
+  expectancyRDelta: number; // real.expectancyR - backtest.expectancyR
+  avgRDelta: number; // real.avgR - backtest.avgR
+  drawdownRDelta: number; // (real.maxDrawdownR ?? 0) - (backtest.maxDrawdownR ?? 0)
+  profitFactorDelta: number | null;
+  sampleRatio: number; // real.totalTrades / backtest.totalTrades
+}
+
+export interface BacktestVsRealModelComparison {
+  model: PrimaryEntryModel;
+  realCohort: EdgeCohortMetrics;
+  backtestCohort: EdgeCohortMetrics;
+  hasData: boolean;
+  hasSufficientData: boolean;
+  delta: {
+    winRateDelta: number;
+    expectancyRDelta: number;
+    drawdownRDelta: number;
+  };
+}
+
+export interface BacktestVsRealWindowComparison {
+  windowKey: 'window_1' | 'window_2' | 'outside';
+  windowLabel: string;
+  realCohort: EdgeCohortMetrics;
+  backtestCohort: EdgeCohortMetrics;
+  hasData: boolean;
+  hasSufficientData: boolean;
+}
+
+export interface BacktestVsRealSymbolComparison {
+  symbol: string;
+  realCohort: EdgeCohortMetrics;
+  backtestCohort: EdgeCohortMetrics;
+  hasData: boolean;
+  hasSufficientData: boolean;
+}
+
+export interface BacktestVsRealComparisonResult {
+  realCohort: EdgeCohortMetrics;
+  backtestCohort: EdgeCohortMetrics;
+  demoCohort: EdgeCohortMetrics;
+  unclassifiedCohort: EdgeCohortMetrics;
+  delta: EnvironmentDelta;
+  verdict: {
+    hasSufficientData: boolean;
+    status: 'optimal' | 'degraded' | 'insufficient_sample' | 'no_data';
+    title: string;
+    description: string;
+  };
+  modelComparisons: BacktestVsRealModelComparison[];
+  windowComparisons: BacktestVsRealWindowComparison[];
+  symbolComparisons: BacktestVsRealSymbolComparison[];
+  allCohorts: EdgeCohortMetrics[];
+}
+
+/**
+ * Compares Backtesting vs Real operational performance without mixing populations.
+ * Assesses Win Rate, Expectancy in R, Drawdown in R, and sample size sufficiency.
+ */
+export function calculateBacktestVsRealComparison(
+  trades: readonly Trade[]
+): BacktestVsRealComparisonResult {
+  const validTrades = trades.filter(isTradeIncludedInAggregates);
+
+  const realTrades = validTrades.filter((t) => t.sourceType === 'real');
+  const backtestTrades = validTrades.filter((t) => t.sourceType === 'backtest');
+  const demoTrades = validTrades.filter((t) => t.sourceType === 'demo');
+  const unclassifiedTrades = validTrades.filter(
+    (t) => !t.sourceType || t.sourceType === 'unclassified'
+  );
+
+  const realCohort = calculateCohortMetrics(
+    'env_real',
+    'Real (Capital en Vivo)',
+    'environment',
+    realTrades
+  );
+  const backtestCohort = calculateCohortMetrics(
+    'env_backtest',
+    'Backtesting (Simulado)',
+    'environment',
+    backtestTrades
+  );
+  const demoCohort = calculateCohortMetrics(
+    'env_demo',
+    'Demo',
+    'environment',
+    demoTrades
+  );
+  const unclassifiedCohort = calculateCohortMetrics(
+    'env_unclassified',
+    'Sin clasificar (Histórico)',
+    'environment',
+    unclassifiedTrades
+  );
+
+  const winRateDelta = Number((realCohort.winRate - backtestCohort.winRate).toFixed(1));
+  const expectancyRDelta = Number(
+    (realCohort.expectancyR - backtestCohort.expectancyR).toFixed(2)
+  );
+  const avgRDelta = Number((realCohort.avgR - backtestCohort.avgR).toFixed(2));
+  const drawdownRDelta = Number(
+    ((realCohort.maxDrawdownR ?? 0) - (backtestCohort.maxDrawdownR ?? 0)).toFixed(2)
+  );
+
+  const profitFactorDelta =
+    realCohort.profitFactorR !== null && backtestCohort.profitFactorR !== null
+      ? Number((realCohort.profitFactorR - backtestCohort.profitFactorR).toFixed(2))
+      : null;
+
+  const sampleRatio =
+    backtestCohort.totalTrades > 0
+      ? Number((realCohort.totalTrades / backtestCohort.totalTrades).toFixed(2))
+      : 0;
+
+  const delta: EnvironmentDelta = {
+    winRateDelta,
+    expectancyRDelta,
+    avgRDelta,
+    drawdownRDelta,
+    profitFactorDelta,
+    sampleRatio,
+  };
+
+  // Statistical confidence evaluation (N_R >= 10 in both environments)
+  const hasSufficientData =
+    realCohort.rSampleSize >= 10 && backtestCohort.rSampleSize >= 10;
+  let verdictStatus: 'optimal' | 'degraded' | 'insufficient_sample' | 'no_data' =
+    'insufficient_sample';
+  let verdictTitle = '';
+  let verdictDescription = '';
+
+  if (realCohort.totalTrades === 0 && backtestCohort.totalTrades === 0) {
+    verdictStatus = 'no_data';
+    verdictTitle = 'Sin operaciones para comparar';
+    verdictDescription =
+      'No se registran operaciones en Real ni en Backtesting en la muestra actual.';
+  } else if (!hasSufficientData) {
+    verdictStatus = 'insufficient_sample';
+    verdictTitle = 'Muestra insuficiente para concluir concordancia';
+    verdictDescription = `Se requiere un mínimo de 10 operaciones con R conocido en ambos entornos para evaluar concordancia estadística fiable (Real n_R=${realCohort.rSampleSize}, Backtest n_R=${backtestCohort.rSampleSize}). Interpreta cualquier discrepancia preliminar con cautela.`;
+  } else {
+    // Both have >= 10 trades with valid R
+    if (expectancyRDelta >= -0.2) {
+      verdictStatus = 'optimal';
+      verdictTitle = 'Alta concordancia operativa entre Backtest y Real';
+      verdictDescription = `La expectativa en Real (${realCohort.expectancyR > 0 ? '+' : ''}${realCohort.expectancyR}R) replica sólidamente la del Backtesting (${backtestCohort.expectancyR > 0 ? '+' : ''}${backtestCohort.expectancyR}R), con una variación de expectativa de ${expectancyRDelta > 0 ? '+' : ''}${expectancyRDelta}R y Drawdown ${drawdownRDelta > 0 ? '+' : ''}${drawdownRDelta}R.`;
+    } else {
+      verdictStatus = 'degraded';
+      verdictTitle = 'Degradación observable en Real vs Backtesting';
+      verdictDescription = `La expectativa en Real (${realCohort.expectancyR > 0 ? '+' : ''}${realCohort.expectancyR}R) muestra una caída de ${Math.abs(expectancyRDelta)}R respecto al Backtesting (${backtestCohort.expectancyR > 0 ? '+' : ''}${backtestCohort.expectancyR}R). Revisa posibles desvíos de ejecución, slippage psicológico o selectividad de setups.`;
+    }
+  }
+
+  // Model comparisons (Breaker Block, Key Level, BPR)
+  const modelsToCompare: PrimaryEntryModel[] = [
+    'Breaker Block',
+    'Key Level',
+    'BPR (Balanced Price Range)',
+  ];
+  const modelComparisons: BacktestVsRealModelComparison[] = modelsToCompare.map((model) => {
+    const realMTrades = realTrades.filter((t) => resolvePrimaryModel(t) === model);
+    const btMTrades = backtestTrades.filter((t) => resolvePrimaryModel(t) === model);
+    const rC = calculateCohortMetrics(`bvr_real_${model}`, `${model} (Real)`, 'model', realMTrades);
+    const bC = calculateCohortMetrics(`bvr_bt_${model}`, `${model} (Backtest)`, 'model', btMTrades);
+    return {
+      model,
+      realCohort: rC,
+      backtestCohort: bC,
+      hasData: rC.totalTrades > 0 || bC.totalTrades > 0,
+      hasSufficientData: rC.rSampleSize >= 10 && bC.rSampleSize >= 10,
+      delta: {
+        winRateDelta: Number((rC.winRate - bC.winRate).toFixed(1)),
+        expectancyRDelta: Number((rC.expectancyR - bC.expectancyR).toFixed(2)),
+        drawdownRDelta: Number(((rC.maxDrawdownR ?? 0) - (bC.maxDrawdownR ?? 0)).toFixed(2)),
+      },
+    };
+  });
+
+  // Window comparisons
+  const windowKeys: Array<'window_1' | 'window_2' | 'outside'> = [
+    'window_1',
+    'window_2',
+    'outside',
+  ];
+  const windowLabels = {
+    window_1: '09:30–10:35 NY (Ventana 1)',
+    window_2: '10:35–11:00 NY (Ventana 2)',
+    outside: 'Fuera de Ventana NY',
+  };
+  const windowComparisons: BacktestVsRealWindowComparison[] = windowKeys.map((wKey) => {
+    const realWTrades = realTrades.filter((t) => resolveOperationalWindow(t).window === wKey);
+    const btWTrades = backtestTrades.filter((t) => resolveOperationalWindow(t).window === wKey);
+    const rC = calculateCohortMetrics(`bvr_real_win_${wKey}`, `${windowLabels[wKey]} (Real)`, 'window', realWTrades);
+    const bC = calculateCohortMetrics(`bvr_bt_win_${wKey}`, `${windowLabels[wKey]} (Backtest)`, 'window', btWTrades);
+    return {
+      windowKey: wKey,
+      windowLabel: windowLabels[wKey],
+      realCohort: rC,
+      backtestCohort: bC,
+      hasData: rC.totalTrades > 0 || bC.totalTrades > 0,
+      hasSufficientData: rC.rSampleSize >= 10 && bC.rSampleSize >= 10,
+    };
+  });
+
+  // Symbol comparisons
+  const symbols = Array.from(
+    new Set([
+      ...realTrades.map((t) => t.symbol.trim().toUpperCase()),
+      ...backtestTrades.map((t) => t.symbol.trim().toUpperCase()),
+    ])
+  ).sort();
+  const symbolComparisons: BacktestVsRealSymbolComparison[] = symbols.map((sym) => {
+    const realSTrades = realTrades.filter((t) => t.symbol.trim().toUpperCase() === sym);
+    const btSTrades = backtestTrades.filter((t) => t.symbol.trim().toUpperCase() === sym);
+    const rC = calculateCohortMetrics(`bvr_real_sym_${sym}`, `${sym} (Real)`, 'symbol', realSTrades);
+    const bC = calculateCohortMetrics(`bvr_bt_sym_${sym}`, `${sym} (Backtest)`, 'symbol', btSTrades);
+    return {
+      symbol: sym,
+      realCohort: rC,
+      backtestCohort: bC,
+      hasData: rC.totalTrades > 0 || bC.totalTrades > 0,
+      hasSufficientData: rC.rSampleSize >= 10 && bC.rSampleSize >= 10,
+    };
+  });
+
+  return {
+    realCohort,
+    backtestCohort,
+    demoCohort,
+    unclassifiedCohort,
+    delta,
+    verdict: {
+      hasSufficientData,
+      status: verdictStatus,
+      title: verdictTitle,
+      description: verdictDescription,
+    },
+    modelComparisons,
+    windowComparisons,
+    symbolComparisons,
+    allCohorts: [realCohort, backtestCohort, demoCohort, unclassifiedCohort],
+  };
 }

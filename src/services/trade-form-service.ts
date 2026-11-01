@@ -4,6 +4,7 @@ import type {
   PsychologyTag,
   PDArray,
   PnlProvenance,
+  TradeSourceType,
 } from '../types/trading.ts';
 import {
   extractNyDateKey,
@@ -17,6 +18,7 @@ export { detectTradeDataConflicts };
 
 export interface TradeFormState {
   dateKey: string;
+  sourceType: TradeSourceType;
   symbol: string;
   direction: TradeDirection | '';
   selectedWindow: 'window_1' | 'window_2';
@@ -113,6 +115,7 @@ export function createInitialTradeFormState(
       takeProfit: editingTrade.takeProfit > 0 ? editingTrade.takeProfit.toString() : '',
       exitPrice: editingTrade.exitPrice > 0 ? editingTrade.exitPrice.toString() : '',
       size: editingTrade.size > 0 ? editingTrade.size.toString() : '1',
+      sourceType: editingTrade.sourceType ?? 'unclassified',
     };
   }
 
@@ -135,6 +138,7 @@ export function createInitialTradeFormState(
     takeProfit: '',
     exitPrice: '',
     size: '1',
+    sourceType: (prefillData?.sourceType as TradeSourceType) || 'real',
   };
 }
 
@@ -498,6 +502,7 @@ export function resolveTradeFormSubmission(
     pnlProvenance: finalPnlProvenance,
     hasDataConflict: finalHasDataConflict,
     conflictReasons: finalConflictReasons,
+    sourceType: form.sourceType || (editingTrade?.sourceType ?? 'unclassified'),
   };
 
   return {

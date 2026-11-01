@@ -2,6 +2,7 @@
 
 import React, { useMemo } from 'react';
 import { useTrading } from '@/context/TradingContext';
+import { calculateDashboardMetrics } from '@/services/math-engine';
 import {
   calculatePercentageEquityCurve,
   calculateOperationalWindowReturnStats,
@@ -78,11 +79,26 @@ function CustomEquityTooltip({ active, payload, curveMode = 'percentage' }: Cust
           </span>
           <span className="text-[11px] text-zinc-400 font-mono">{pt.date}</span>
         </div>
-        <div className="mt-1.5 flex items-center gap-1.5">
-          <span className="text-[10px] text-zinc-500">Horario:</span>
-          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${isWindow ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20' : 'bg-sky-500/10 text-sky-300 border border-sky-500/20'}`}>
-            {timeDisplay}
-          </span>
+        <div className="mt-1.5 flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-zinc-500">Horario:</span>
+            <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${isWindow ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20' : 'bg-sky-500/10 text-sky-300 border border-sky-500/20'}`}>
+              {timeDisplay}
+            </span>
+          </div>
+          {pt.sourceType && (
+            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+              pt.sourceType === 'real'
+                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25'
+                : pt.sourceType === 'backtest'
+                ? 'bg-amber-500/10 text-amber-400 border-amber-500/25'
+                : pt.sourceType === 'demo'
+                ? 'bg-purple-500/10 text-purple-400 border-purple-500/25'
+                : 'bg-zinc-800 text-zinc-400 border-white/10'
+            }`}>
+              {pt.sourceType === 'real' ? 'Real' : pt.sourceType === 'backtest' ? 'Backtest' : pt.sourceType === 'demo' ? 'Demo' : 'Sin clasificar'}
+            </span>
+          )}
         </div>
       </div>
 
@@ -138,24 +154,75 @@ function CustomEquityTooltip({ active, payload, curveMode = 'percentage' }: Cust
 }
 
 export function DashboardView() {
-  const { trades, accounts, metrics, theme } = useTrading();
+  const { trades, accounts, metrics: globalMetrics, theme } = useTrading();
+  type EnvFilterType = 'All' | 'real' | 'demo' | 'backtest' | 'unclassified';
+  const [envFilter, setEnvFilter] = React.useState<EnvFilterType>('All');
+
+  const dashboardTrades = useMemo(() => {
+    if (envFilter === 'All') return trades;
+    return trades.filter((t) => (t.sourceType || 'unclassified') === envFilter);
+  }, [trades, envFilter]);
+
+  const metrics = useMemo(() => {
+    if (envFilter === 'All') return globalMetrics;
+    return calculateDashboardMetrics(dashboardTrades, accounts);
+  }, [dashboardTrades, accounts, envFilter, globalMetrics]);
 
   const equityResult = useMemo(() => {
-    return calculatePercentageEquityCurve(trades, accounts);
-  }, [trades, accounts]);
+    return calculatePercentageEquityCurve(dashboardTrades, accounts);
+  }, [dashboardTrades, accounts]);
 
   const operationalWindowStats = useMemo(() => {
-    return calculateOperationalWindowReturnStats(trades, accounts);
-  }, [trades, accounts]);
+    return calculateOperationalWindowReturnStats(dashboardTrades, accounts);
+  }, [dashboardTrades, accounts]);
 
   const weekdayStats = useMemo(() => {
-    return calculateWeekdayReturnStats(trades, accounts);
-  }, [trades, accounts]);
+    return calculateWeekdayReturnStats(dashboardTrades, accounts);
+  }, [dashboardTrades, accounts]);
 
   const isRMode = equityResult.curveMode === 'r_multiple';
 
   return (
     <div className="space-y-6">
+      {/* Selector de Entorno: Real / Demo / Backtest / Sin clasificar */}
+      <div className="bg-[#111114] p-3 rounded-2xl border border-white/[0.08] flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold uppercase tracking-wider text-zinc-400">
+            Entorno:
+          </span>
+          <div className="flex flex-wrap gap-1">
+            {[
+              { id: 'All', label: 'Todos', count: trades.length },
+              { id: 'real', label: 'Real', count: trades.filter((t) => t.sourceType === 'real').length },
+              { id: 'demo', label: 'Demo', count: trades.filter((t) => t.sourceType === 'demo').length },
+              { id: 'backtest', label: 'Backtesting', count: trades.filter((t) => t.sourceType === 'backtest').length },
+              { id: 'unclassified', label: 'Sin clasificar', count: trades.filter((t) => !t.sourceType || t.sourceType === 'unclassified').length },
+            ].map((item) => {
+              const active = envFilter === item.id;
+              return (
+                <button
+                  type="button"
+                  key={item.id}
+                  onClick={() => setEnvFilter(item.id as EnvFilterType)}
+                  className={`px-3 py-1 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
+                    active
+                      ? theme.buttonClass
+                      : 'bg-zinc-900 border border-white/[0.06] text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  {item.label} ({item.count})
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {envFilter === 'All' && trades.some((t) => t.sourceType === 'backtest') && trades.some((t) => t.sourceType === 'real') && (
+          <span className="text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-lg">
+            Atención: Vista combinada. Usa los filtros para evaluar Real o Backtest por separado.
+          </span>
+        )}
+      </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
         {/* Tarjeta 1: Retorno Neto */}
         <div className="bg-[#111114] rounded-2xl p-5 border border-white/[0.08] hover:border-white/[0.15] transition-colors">

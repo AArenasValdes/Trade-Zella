@@ -531,6 +531,23 @@ export function CalendarView({
                               {t.durationMinutes} min
                             </span>
                           )}
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                            t.sourceType === 'real'
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25'
+                              : t.sourceType === 'backtest'
+                              ? 'bg-amber-500/10 text-amber-400 border-amber-500/25'
+                              : t.sourceType === 'demo'
+                              ? 'bg-purple-500/10 text-purple-400 border-purple-500/25'
+                              : 'bg-zinc-800 text-zinc-400 border-white/10'
+                          }`}>
+                            {t.sourceType === 'real'
+                              ? 'Real'
+                              : t.sourceType === 'backtest'
+                              ? 'Backtest'
+                              : t.sourceType === 'demo'
+                              ? 'Demo'
+                              : 'Sin clasificar'}
+                          </span>
                         </div>
                         <div className="text-right">
                           <span

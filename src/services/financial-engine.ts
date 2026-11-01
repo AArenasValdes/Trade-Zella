@@ -47,6 +47,7 @@ export interface EquityPointPct {
   equity: number | null;
   drawdownPct: number | null;
   drawdownR?: number;
+  sourceType?: Trade['sourceType'];
 }
 
 export interface PercentageEquityCurveResult {
@@ -715,6 +716,7 @@ export function calculatePercentageEquityCurve(
         equity: null,
         drawdownPct: null,
         drawdownR: Number(ddR.toFixed(2)),
+        sourceType: t.sourceType || 'unclassified',
       });
     }
 
@@ -817,6 +819,7 @@ export function calculatePercentageEquityCurve(
       hasEstimatedInCumulative,
       symbol: t.symbol,
       direction: t.direction,
+      sourceType: t.sourceType || 'unclassified',
       pnl: t.netPnl,
       tradeReturnPct,
       tradeRMultiple: t.rUnrecorded ? undefined : t.rMultiple,

@@ -22,6 +22,7 @@ export type TimePrecision = 'exact' | 'window';
 export type CalculationMode = 'monetary' | 'derived_r' | 'unrecorded';
 export type PnlProvenance = 'audited' | 'theoretical' | 'derived_r' | 'unrecorded';
 export type ReturnBase = 'constant_initial_capital' | 'r_multiple_only' | 'insufficient_data';
+export type TradeSourceType = 'real' | 'demo' | 'backtest' | 'unclassified';
 
 export type PsychologyTag =
   | 'A+ Alineado al Contexto HTF'
@@ -131,6 +132,7 @@ export interface Trade {
   conflictReasons?: string[];
   realizedNetReturnPct?: number | null;
   durationMinutes?: number | null;
+  sourceType?: TradeSourceType;
 }
 
 export interface TradeFilters {
@@ -142,6 +144,7 @@ export interface TradeFilters {
   playbookId: string;
   dateFrom: string;
   dateTo: string;
+  sourceType?: 'All' | TradeSourceType;
 }
 
 export interface DataCoverageInfo {
