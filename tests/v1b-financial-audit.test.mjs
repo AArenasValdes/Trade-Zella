@@ -852,3 +852,124 @@ test('14. Round-trip de has_data_conflict y conflict_reasons en serialización/d
   assert.equal(cleanMapped.hasDataConflict, false);
   assert.deepEqual(cleanMapped.conflictReasons, []);
 });
+
+// ----------------------------------------------------------------------------------
+// 15. Aislamiento estricto de capital en modo portafolio: nunca atribuir rentabilidad de cuenta técnica al capital de otra cuenta
+// ----------------------------------------------------------------------------------
+test('15. Portafolio con cuenta verificada sin operaciones y cuenta técnica con +$200: nunca atribuye el 2% a la cuenta verificada', () => {
+  const accountVerified = {
+    id: 'acc-verified-10k',
+    name: 'Cuenta Fondeada $10,000',
+    initialBalance: 10000,
+    hasVerifiedBalance: true,
+    isTechnical: false,
+  };
+
+  const accountTech = {
+    id: 'acc-technical-zero',
+    name: 'Cuenta Técnica',
+    initialBalance: 0,
+    hasVerifiedBalance: false,
+    isTechnical: true,
+  };
+
+  const tradeOnTechAccount = {
+    id: 't-tech-200',
+    symbol: 'NQ',
+    direction: 'Long',
+    entryDate: '2026-10-31T09:30',
+    netPnl: 200,
+    grossPnl: 200,
+    commission: 0,
+    rMultiple: 1.0,
+    calculationMode: 'monetary',
+    pnlProvenance: 'theoretical',
+    status: 'Win',
+    accountId: 'acc-technical-zero',
+  };
+
+  const accounts = [accountVerified, accountTech];
+  const trades = [tradeOnTechAccount];
+
+  // 1. Portafolio consolidado ("All" o targetAccountId omitido):
+  // AccountVerified tiene $10,000 pero 0 operaciones.
+  // TradeOnTechAccount tiene +$200 pero pertenece a la cuenta técnica de capital cero.
+  // NO debe dividir $200 / $10,000 para inventar un +2.00% sobre la cuenta verificada.
+  const portfolioReturn = calculateConsolidatedReturnPct(trades, accounts);
+
+  assert.equal(portfolioReturn.returnPct, null, 'returnPct debe ser null, nunca +2.0% atribuido al capital de otra cuenta');
+  assert.equal(portfolioReturn.isValid, false);
+  assert.equal(portfolioReturn.includedTradesCount, 0, 'La operación técnica no debe incluirse en la base porcentual de la cuenta verificada');
+  assert.equal(portfolioReturn.excludedTradesCount, 1);
+  assert.equal(portfolioReturn.isPartial, true);
+  // Conserva el P&L monetario histórico sin borrarlo
+  assert.equal(portfolioReturn.totalNetPnl, 200);
+
+  // 2. Curva de equidad en modo portafolio:
+  // Al no haber operaciones en cuentas verificadas, no debe generar curva de porcentaje inflando $10,000 a $10,200.
+  const curveResult = calculatePercentageEquityCurve(trades, accounts);
+  assert.equal(curveResult.curveMode, 'r_multiple', 'Debe alternar a r_multiple ante la ausencia de operaciones en cuentas verificadas');
+  assert.equal(curveResult.isPartialCurve, false, 'En modo R, 1 de 1 operaciones con R válido están incluidas');
+  assert.equal(curveResult.currentReturnPct, null);
+
+  // 3. Métricas de Dashboard en modo portafolio:
+  const metrics = calculateDashboardMetrics(trades, accounts);
+  assert.equal(metrics.netPnl, 200, 'Conserva el resultado monetario en dólares');
+  assert.equal(metrics.netReturnPct, null, 'netReturnPct debe ser null, nunca +2.0%');
+  assert.equal(metrics.isPartialReturn, true);
+
+  // 4. Agregar operación histórica verificada en la cuenta de $10,000 (+$500) junto a la técnica (+$200):
+  const tradeOnVerifiedAccount = {
+    id: 't-verified-500',
+    symbol: 'NQ',
+    direction: 'Long',
+    entryDate: '2026-10-31T10:00',
+    netPnl: 500,
+    grossPnl: 515,
+    commission: 15,
+    rMultiple: 2.5,
+    calculationMode: 'monetary',
+    pnlProvenance: 'audited',
+    status: 'Win',
+    accountId: 'acc-verified-10k',
+  };
+
+  const mixedTrades = [tradeOnTechAccount, tradeOnVerifiedAccount];
+  const mixedPortfolioReturn = calculateConsolidatedReturnPct(mixedTrades, accounts);
+
+  // Solo los $500 de la cuenta verificada deben dividirse entre los $10,000 (retorno real = 5.0%, no 7.0%)
+  assert.equal(mixedPortfolioReturn.returnPct, 5.0, 'Retorno debe ser estrictamente 5.0% ($500 / $10,000), aislando la cuenta técnica');
+  assert.equal(mixedPortfolioReturn.isValid, true);
+  assert.equal(mixedPortfolioReturn.includedTradesCount, 1);
+  assert.equal(mixedPortfolioReturn.excludedTradesCount, 1);
+  assert.equal(mixedPortfolioReturn.isPartial, true, 'Debe marcar cobertura parcial al haber operaciones excluidas');
+  assert.equal(mixedPortfolioReturn.totalNetPnl, 500);
+
+  // La curva de equidad debe computar solo la operación verificada sobre los $10,000
+  const mixedCurve = calculatePercentageEquityCurve(mixedTrades, accounts);
+  assert.equal(mixedCurve.curveMode, 'percentage');
+  assert.equal(mixedCurve.includedTradesCount, 1);
+  assert.equal(mixedCurve.excludedTradesCount, 1);
+  assert.equal(mixedCurve.isPartialCurve, true);
+  assert.equal(mixedCurve.currentReturnPct, 5.0);
+  assert.equal(mixedCurve.points[1].equity, 10500); // 10000 + 500, nunca 10700
+
+  // 5. Operaciones en R sin capital declarado (unrecorded):
+  const tradeROnly = {
+    id: 't-r-only',
+    symbol: 'NAS100',
+    direction: 'Long',
+    entryDate: '2026-10-31T10:30',
+    netPnl: 0,
+    rMultiple: 2.0,
+    calculationMode: 'unrecorded',
+    status: 'Win',
+    accountId: 'acc-technical-zero',
+  };
+  const tradesWithR = [...mixedTrades, tradeROnly];
+  const rReturn = calculateConsolidatedReturnPct(tradesWithR, accounts);
+  assert.equal(rReturn.returnPct, 5.0, 'Trades en R no alteran el % de capital');
+  assert.equal(rReturn.includedTradesCount, 1);
+  assert.equal(rReturn.excludedTradesCount, 2);
+  assert.equal(rReturn.isPartial, true);
+});

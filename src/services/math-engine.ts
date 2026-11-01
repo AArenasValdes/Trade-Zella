@@ -18,6 +18,7 @@ import {
   calculatePercentageEquityCurve,
   isTradeIncludedInAggregates,
   hasValidRMultiple,
+  isAccountCapitalVerified,
 } from './financial-engine.ts';
 
 export function detectKillzoneFromTime(dateTimeStr: string): Killzone {
@@ -242,9 +243,7 @@ export function calculateDashboardMetrics(
   accounts: readonly PropAccount[] = [],
   targetAccountId?: string
 ): DashboardMetrics {
-  const verifiedAccounts = accounts.filter(
-    (a) => a.hasVerifiedBalance !== false && Number.isFinite(a.initialBalance) && a.initialBalance > 0
-  );
+  const verifiedAccounts = accounts.filter(isAccountCapitalVerified);
   const refCapital =
     targetAccountId && targetAccountId !== 'All'
       ? verifiedAccounts.find((a) => a.id === targetAccountId)?.initialBalance ?? 0

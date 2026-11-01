@@ -234,11 +234,21 @@ export function resolveTradeReturnPct(
 }
 
 /**
+ * Returns true if an account has a verified, non-technical initial balance with capital > 0.
+ */
+export function isAccountCapitalVerified(account?: PropAccount): boolean {
+  if (!account) return false;
+  if (account.isTechnical === true || account.hasVerifiedBalance === false) return false;
+  return Number.isFinite(account.initialBalance) && account.initialBalance > 0;
+}
+
+/**
  * Resolves the relevant accounts and calculates consolidated return strictly over constant initial capital.
  * - Excludes trades with unresolved data conflicts (`hasDataConflict === true`).
  * - Filters accounts to only verified accounts with positive initial capital.
  * - Distinguishes between monetary trades and unrecorded trades.
  * - Never sums or mixes standalone percentages without a verified constant initial capital denominator.
+ * - Never attributes monetary P&L of uncapitalized/technical accounts to other verified accounts in portfolio scope.
  */
 export function calculateConsolidatedReturnPct(
   trades: readonly Pick<
@@ -254,9 +264,8 @@ export function calculateConsolidatedReturnPct(
   accounts: readonly PropAccount[],
   targetAccountId?: string
 ): ConsolidatedReturnResult {
-  const verifiedAccounts = accounts.filter(
-    (a) => a.hasVerifiedBalance !== false && Number.isFinite(a.initialBalance) && a.initialBalance > 0
-  );
+  const verifiedAccounts = accounts.filter(isAccountCapitalVerified);
+  const verifiedAccountIdSet = new Set(verifiedAccounts.map((a) => a.id));
 
   const tradesInScope =
     targetAccountId && targetAccountId !== 'All'
@@ -266,9 +275,15 @@ export function calculateConsolidatedReturnPct(
   const validTrades = tradesInScope.filter(isTradeIncludedInAggregates);
   const conflictedTradesCount = tradesInScope.length - validTrades.length;
 
-  const monetaryTrades = validTrades.filter(
+  const allMonetaryTrades = validTrades.filter(
     (t) => t.calculationMode !== 'unrecorded' && Number.isFinite(t.netPnl)
   );
+
+  // Monetary trades belonging strictly to accounts with verified constant initial capital
+  const verifiedMonetaryTrades = allMonetaryTrades.filter((t) =>
+    verifiedAccountIdSet.has(t.accountId)
+  );
+
   const rValidTrades = validTrades.filter(hasValidRMultiple);
   const unrecordedRTradesCount = validTrades.filter((t) => Boolean(t.rUnrecorded)).length;
 
@@ -281,13 +296,14 @@ export function calculateConsolidatedReturnPct(
     ? Boolean(singleAccount)
     : verifiedAccounts.length > 0;
 
-  const includedTradesCount = hasVerifiedReferenceCapital ? monetaryTrades.length : 0;
+  // Included trades for the percentage return calculation are strictly those with verified monetary results on verified capital
+  const includedTradesCount = hasVerifiedReferenceCapital ? verifiedMonetaryTrades.length : 0;
   const excludedTradesCount = tradesInScope.length - includedTradesCount;
   const isPartial = tradesInScope.length > 0 && excludedTradesCount > 0;
 
   const coverage: DataCoverageInfo = {
     totalTrades: tradesInScope.length,
-    monetaryTradesCount: monetaryTrades.length,
+    monetaryTradesCount: allMonetaryTrades.length,
     returnPctTradesCount: validTrades.filter(
       (t) =>
         t.realizedNetReturnPct !== null &&
@@ -313,7 +329,7 @@ export function calculateConsolidatedReturnPct(
         isPartial: true,
         includedTradesCount: 0,
         excludedTradesCount: tradesInScope.length,
-        totalNetPnl: null,
+        totalNetPnl: allMonetaryTrades.length > 0 ? allMonetaryTrades.reduce((sum, t) => sum + t.netPnl, 0) : null,
         totalReferenceCapital: 0,
         isValid: false,
         accountCount: 0,
@@ -323,8 +339,8 @@ export function calculateConsolidatedReturnPct(
     }
 
     const totalNetPnl =
-      monetaryTrades.length > 0
-        ? monetaryTrades.reduce((sum, t) => sum + t.netPnl, 0)
+      verifiedMonetaryTrades.length > 0
+        ? verifiedMonetaryTrades.reduce((sum, t) => sum + t.netPnl, 0)
         : null;
 
     if (totalNetPnl === null) {
@@ -349,7 +365,7 @@ export function calculateConsolidatedReturnPct(
       returnPct,
       returnBase: 'constant_initial_capital',
       isPartial,
-      includedTradesCount: monetaryTrades.length,
+      includedTradesCount: verifiedMonetaryTrades.length,
       excludedTradesCount,
       totalNetPnl,
       totalReferenceCapital: singleAccount.initialBalance,
@@ -360,11 +376,6 @@ export function calculateConsolidatedReturnPct(
   }
 
   // 2. Portfolio Scope ("All" or undefined targetAccountId)
-  const totalNetPnl =
-    monetaryTrades.length > 0
-      ? monetaryTrades.reduce((sum, t) => sum + t.netPnl, 0)
-      : null;
-
   if (verifiedAccounts.length === 0) {
     return {
       returnPct: null,
@@ -372,7 +383,7 @@ export function calculateConsolidatedReturnPct(
       isPartial: tradesInScope.length > 0,
       includedTradesCount: 0,
       excludedTradesCount: tradesInScope.length,
-      totalNetPnl,
+      totalNetPnl: allMonetaryTrades.length > 0 ? allMonetaryTrades.reduce((sum, t) => sum + t.netPnl, 0) : null,
       totalReferenceCapital: 0,
       isValid: false,
       accountCount: 0,
@@ -381,15 +392,34 @@ export function calculateConsolidatedReturnPct(
     };
   }
 
+  // Never attribute return % of technical/uncapitalized accounts to other verified accounts!
+  // If there are no monetary trades on verified accounts, returnPct is null.
+  if (verifiedMonetaryTrades.length === 0) {
+    return {
+      returnPct: null,
+      returnBase: rValidTrades.length > 0 ? 'r_multiple_only' : 'insufficient_data',
+      isPartial: tradesInScope.length > 0,
+      includedTradesCount: 0,
+      excludedTradesCount: tradesInScope.length,
+      totalNetPnl: allMonetaryTrades.length > 0 ? allMonetaryTrades.reduce((sum, t) => sum + t.netPnl, 0) : null,
+      totalReferenceCapital: verifiedAccounts.reduce((sum, a) => sum + a.initialBalance, 0),
+      isValid: false,
+      accountCount: verifiedAccounts.length,
+      coverage,
+      errorReason: 'Sin operaciones monetarias en cuentas verificadas para calcular retorno',
+    };
+  }
+
+  const totalNetPnl = verifiedMonetaryTrades.reduce((sum, t) => sum + t.netPnl, 0);
   const totalReferenceCapital = verifiedAccounts.reduce((sum, a) => sum + a.initialBalance, 0);
 
-  if (totalNetPnl !== null && totalReferenceCapital > 0) {
+  if (totalReferenceCapital > 0) {
     const returnPct = (totalNetPnl / totalReferenceCapital) * 100;
     return {
       returnPct,
       returnBase: 'constant_initial_capital',
       isPartial,
-      includedTradesCount: monetaryTrades.length,
+      includedTradesCount: verifiedMonetaryTrades.length,
       excludedTradesCount,
       totalNetPnl,
       totalReferenceCapital,
@@ -405,11 +435,12 @@ export function calculateConsolidatedReturnPct(
     isPartial: tradesInScope.length > 0,
     includedTradesCount: 0,
     excludedTradesCount: tradesInScope.length,
-    totalNetPnl,
-    totalReferenceCapital,
+    totalNetPnl: allMonetaryTrades.length > 0 ? allMonetaryTrades.reduce((sum, t) => sum + t.netPnl, 0) : null,
+    totalReferenceCapital: 0,
     isValid: false,
-    accountCount: verifiedAccounts.length,
+    accountCount: 0,
     coverage,
+    errorReason: 'Capital de referencia insuficiente',
   };
 }
 
@@ -458,13 +489,11 @@ export function calculateMonthlyReturnPct(
 /**
  * Resolves the constant initial reference capital for the current scope.
  */
-function resolveScopeReferenceCapital(
+export function resolveScopeReferenceCapital(
   accounts: readonly PropAccount[],
   targetAccountId?: string
 ): number {
-  const verifiedAccounts = accounts.filter(
-    (a) => a.hasVerifiedBalance !== false && Number.isFinite(a.initialBalance) && a.initialBalance > 0
-  );
+  const verifiedAccounts = accounts.filter(isAccountCapitalVerified);
   if (targetAccountId && targetAccountId !== 'All') {
     const acc = verifiedAccounts.find((a) => a.id === targetAccountId);
     return acc ? acc.initialBalance : 0;
@@ -492,6 +521,9 @@ export function calculateAvgWinReturnPct(
   const referenceCapital = resolveScopeReferenceCapital(accounts, targetAccountId);
   if (referenceCapital <= 0) return null;
 
+  const verifiedAccounts = accounts.filter(isAccountCapitalVerified);
+  const verifiedAccountIdSet = new Set(verifiedAccounts.map((a) => a.id));
+
   const scopeWins = (
     targetAccountId && targetAccountId !== 'All'
       ? wins.filter((w) => w.accountId === targetAccountId)
@@ -501,7 +533,11 @@ export function calculateAvgWinReturnPct(
   if (scopeWins.length === 0) return 0;
 
   const monetaryWins = scopeWins.filter(
-    (w) => w.calculationMode !== 'unrecorded' && Number.isFinite(w.netPnl) && w.netPnl > 0
+    (w) =>
+      w.calculationMode !== 'unrecorded' &&
+      Number.isFinite(w.netPnl) &&
+      w.netPnl > 0 &&
+      verifiedAccountIdSet.has(w.accountId)
   );
   if (monetaryWins.length === 0) return null;
 
@@ -530,6 +566,9 @@ export function calculateAvgLossReturnPct(
   const referenceCapital = resolveScopeReferenceCapital(accounts, targetAccountId);
   if (referenceCapital <= 0) return null;
 
+  const verifiedAccounts = accounts.filter(isAccountCapitalVerified);
+  const verifiedAccountIdSet = new Set(verifiedAccounts.map((a) => a.id));
+
   const scopeLosses = (
     targetAccountId && targetAccountId !== 'All'
       ? losses.filter((l) => l.accountId === targetAccountId)
@@ -539,7 +578,11 @@ export function calculateAvgLossReturnPct(
   if (scopeLosses.length === 0) return 0;
 
   const monetaryLosses = scopeLosses.filter(
-    (l) => l.calculationMode !== 'unrecorded' && Number.isFinite(l.netPnl) && l.netPnl < 0
+    (l) =>
+      l.calculationMode !== 'unrecorded' &&
+      Number.isFinite(l.netPnl) &&
+      l.netPnl < 0 &&
+      verifiedAccountIdSet.has(l.accountId)
   );
   if (monetaryLosses.length === 0) return null;
 
@@ -568,7 +611,8 @@ export function calculateExpectancyReturnPct(
  * Calculates percentage equity curve (over constant initial reference capital) or pure R-Multiple curve.
  * - Excludes trades with `hasDataConflict === true`.
  * - In R-Multiple mode, excludes trades with `rUnrecorded === true`.
- * - In Percentage mode, includes only monetary trades (`calculationMode !== 'unrecorded'`) and marks `isPartialCurve` whenever any trades were excluded.
+ * - In Percentage mode, includes only monetary trades belonging to accounts with verified constant capital.
+ * - Never attributes monetary P&L of uncapitalized/technical accounts to other accounts.
  */
 export function calculatePercentageEquityCurve(
   chronologicalTrades: readonly Trade[],
@@ -587,12 +631,19 @@ export function calculatePercentageEquityCurve(
     (a, b) => a.entryDate.localeCompare(b.entryDate) || a.id.localeCompare(b.id)
   );
 
+  const verifiedAccounts = accounts.filter(isAccountCapitalVerified);
+  const verifiedAccountIdSet = new Set(verifiedAccounts.map((a) => a.id));
   const referenceCapital = resolveScopeReferenceCapital(accounts, targetAccountId);
-  const hasMonetaryTrades = sortedTrades.some(
-    (t) => t.calculationMode !== 'unrecorded' && Number.isFinite(t.netPnl) && t.netPnl !== 0
+
+  // In percentage mode, only monetary trades on accounts with verified constant capital are admitted
+  const verifiedMonetaryTradesInCurve = sortedTrades.filter(
+    (t) =>
+      t.calculationMode !== 'unrecorded' &&
+      Number.isFinite(t.netPnl) &&
+      verifiedAccountIdSet.has(t.accountId)
   );
 
-  const canBuildPercentageCurve = referenceCapital > 0 && hasMonetaryTrades;
+  const canBuildPercentageCurve = referenceCapital > 0 && verifiedMonetaryTradesInCurve.length > 0;
 
   if (!canBuildPercentageCurve) {
     // Mode: R-Multiple Cumulative Curve
@@ -693,9 +744,7 @@ export function calculatePercentageEquityCurve(
   }
 
   // Mode: Percentage Equity Curve over constant initial capital
-  const monetaryTradesInCurve = sortedTrades.filter(
-    (t) => t.calculationMode !== 'unrecorded' && Number.isFinite(t.netPnl)
-  );
+  const monetaryTradesInCurve = verifiedMonetaryTradesInCurve;
 
   let cumulativePnl = 0;
   let hasEstimatedInCumulative = false;
