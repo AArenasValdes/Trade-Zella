@@ -28,6 +28,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Generate Next.js Types
+        run: pnpm exec next typegen
+
       - name: TypeScript Compiler Check
         run: pnpm exec tsc --noEmit
 

@@ -8,6 +8,7 @@ import { Topbar } from '@/components/layout/Topbar';
 import { DashboardView } from '@/components/views/DashboardView';
 import { JournalView } from '@/components/views/JournalView';
 import { CalendarView } from '@/components/views/CalendarView';
+import { AnalyticsView } from '@/components/views/AnalyticsView';
 import { PlaybooksView } from '@/components/views/PlaybooksView';
 import { TradeFormModal } from '@/components/modals/TradeFormModal';
 import { TradeInspectorDrawer } from '@/components/modals/TradeInspectorDrawer';
@@ -110,6 +111,12 @@ function TradingWorkspace({ user }: { user: User }) {
               <CalendarView
                 onInspectTrade={setInspectedTrade}
                 onOpenNewTradeForDate={handleOpenNewTradeForDate}
+              />
+            )}
+
+            {activeTab === 'analytics' && (
+              <AnalyticsView
+                onInspectTrade={setInspectedTrade}
               />
             )}
 
