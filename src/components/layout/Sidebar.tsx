@@ -12,12 +12,13 @@ import {
   BarChart3,
   Calendar as CalendarIcon,
   Layers,
+  Target,
   RotateCcw,
   Heart,
   X,
 } from 'lucide-react';
 
-export type ActiveTab = 'dashboard' | 'calendar' | 'playbooks';
+export type ActiveTab = 'dashboard' | 'calendar' | 'analytics' | 'playbooks';
 
 interface SidebarProps {
   activeTab: ActiveTab;
@@ -158,7 +159,8 @@ export function Sidebar({
           {[
             { id: 'dashboard', label: 'Dashboard & Ratios', icon: BarChart3 },
             { id: 'calendar', label: 'Calendario', icon: CalendarIcon },
-            { id: 'playbooks', label: 'Estadísticas', icon: Layers },
+            { id: 'analytics', label: 'Análisis de Edge', icon: Target },
+            { id: 'playbooks', label: 'Playbooks & Setups', icon: Layers },
           ].map((item) => {
             const Icon = item.icon;
             const active = activeTab === item.id;

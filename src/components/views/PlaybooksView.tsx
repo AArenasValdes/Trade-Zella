@@ -1,23 +1,14 @@
 "use client";
 
-import React, { useState, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { useTrading } from '@/context/TradingContext';
-import { PD_ARRAYS, KILLZONES } from '@/config/ict-constants';
-import { Killzone, PDArray, SetupGrade } from '@/types/trading';
+import { PD_ARRAYS } from '@/config/ict-constants';
+import { SetupGrade } from '@/types/trading';
 import { calculateConsolidatedReturnPct, formatReturnPct } from '@/services/financial-engine';
-import { Layers, Plus, Trash2, CheckCircle2, X } from 'lucide-react';
+import { Layers, Trash2, CheckCircle2 } from 'lucide-react';
 
 export function PlaybooksView() {
-  const { trades, accounts, playbooks, addPlaybook, deletePlaybook, theme } = useTrading();
-  const [isModalOpen, setIsModalOpen] = useState(false);
-
-  const [newPb, setNewPb] = useState({
-    name: '',
-    description: '',
-    defaultKillzone: 'NY Open 09:30 AM (09:30-10:30)' as Killzone,
-    requiredPdArrays: [] as PDArray[],
-    rulesText: '',
-  });
+  const { trades, accounts, playbooks, deletePlaybook, theme } = useTrading();
 
   const playbookStats = useMemo(() => {
     return playbooks.map((pb) => {
@@ -91,30 +82,6 @@ export function PlaybooksView() {
     }).sort((a, b) => (b.returnPct ?? b.pnl) - (a.returnPct ?? a.pnl));
   }, [trades, accounts]);
 
-  const togglePd = (pd: PDArray) => {
-    setNewPb((prev) => ({
-      ...prev,
-      requiredPdArrays: prev.requiredPdArrays.includes(pd)
-        ? prev.requiredPdArrays.filter((i) => i !== pd)
-        : [...prev.requiredPdArrays, pd],
-    }));
-  };
-
-  const handleCreatePlaybook = (e: React.FormEvent) => {
-    e.preventDefault();
-    addPlaybook({
-      name: newPb.name,
-      description: newPb.description,
-      defaultKillzone: newPb.defaultKillzone,
-      requiredPdArrays: newPb.requiredPdArrays,
-      rules: newPb.rulesText
-        .split('\n')
-        .map((r) => r.trim())
-        .filter(Boolean),
-    });
-    setIsModalOpen(false);
-  };
-
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
@@ -153,15 +120,9 @@ export function PlaybooksView() {
               Estadísticas
             </h2>
             <p className="text-xs text-zinc-500">
-              Revisa resultados por escenario y confluencia; crea solo los escenarios que quieras seguir.
+              Revisa resultados por escenario y confluencia en tus operaciones registradas.
             </p>
           </div>
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer ${theme.buttonClass}`}
-          >
-            <Plus className="w-4 h-4" /> Nuevo Escenario
-          </button>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -278,133 +239,6 @@ export function PlaybooksView() {
           ))}
         </div>
       </div>
-
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
-          <div className="bg-[#111114] text-zinc-100 rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-white/10">
-            <div className="flex items-center justify-between pb-3 border-b border-white/[0.08]">
-              <h3 className="text-base font-bold text-white">
-                Nuevo Escenario Operativo
-              </h3>
-              <button
-                onClick={() => setIsModalOpen(false)}
-                className="p-1.5 rounded-lg text-zinc-400 hover:bg-white/5 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleCreatePlaybook} className="space-y-3 mt-4">
-              <div>
-                <label className="block text-xs font-semibold text-zinc-400 mb-1">
-                  Nombre del Escenario
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={newPb.name}
-                  onChange={(e) => setNewPb({ ...newPb, name: e.target.value })}
-                  placeholder="Ej: Apertura NY 09:30 Continuación HTF"
-                  className="w-full px-3 py-2 text-sm rounded-xl bg-zinc-900 border border-white/10 text-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-zinc-400 mb-1">
-                  Descripción
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={newPb.description}
-                  onChange={(e) =>
-                    setNewPb({ ...newPb, description: e.target.value })
-                  }
-                  placeholder="Alineación 1D/4H/2H/30m con entrada en 15m/5m"
-                  className="w-full px-3 py-2 text-sm rounded-xl bg-zinc-900 border border-white/10 text-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-zinc-400 mb-1">
-                  Ventana Horaria NY
-                </label>
-                <select
-                  value={newPb.defaultKillzone}
-                  onChange={(e) =>
-                    setNewPb({
-                      ...newPb,
-                      defaultKillzone: e.target.value as Killzone,
-                    })
-                  }
-                  className="w-full px-3 py-2 text-sm rounded-xl bg-zinc-900 border border-white/10 text-white"
-                >
-                  {KILLZONES.map((kz) => (
-                    <option key={kz} value={kz}>
-                      {kz}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-zinc-400 mb-1">
-                  Confluencias Frecuentes
-                </label>
-                <div className="flex flex-wrap gap-1.5">
-                  {PD_ARRAYS.map((pd) => {
-                    const active = newPb.requiredPdArrays.includes(pd);
-                    return (
-                      <button
-                        type="button"
-                        key={pd}
-                        onClick={() => togglePd(pd)}
-                        className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold cursor-pointer ${
-                          active
-                            ? theme.buttonClass
-                            : 'bg-zinc-900 border border-white/10 text-zinc-400'
-                        }`}
-                      >
-                        {pd.split(' (')[0]}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-zinc-400 mb-1">
-                  Reglas de Confirmación (1 por línea)
-                </label>
-                <textarea
-                  rows={3}
-                  value={newPb.rulesText}
-                  onChange={(e) =>
-                    setNewPb({ ...newPb, rulesText: e.target.value })
-                  }
-                  className="w-full px-3 py-2 text-xs rounded-xl bg-zinc-900 border border-white/10 text-white"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-3 border-t border-white/[0.08]">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:bg-white/5 cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className={`px-5 py-2 rounded-xl text-xs font-bold cursor-pointer ${theme.buttonClass}`}
-                >
-                  Guardar Escenario
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
