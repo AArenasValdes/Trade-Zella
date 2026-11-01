@@ -72,6 +72,7 @@ export function Topbar({ activeTab, onToggleMobileNav, signedInEmail, onSignOut,
             {activeTab === 'calendar' && 'Calendario'}
             {activeTab === 'analytics' && 'Análisis de Edge & Estadísticas'}
             {activeTab === 'monte-carlo' && 'Simulador Monte Carlo'}
+            {activeTab === 'ai-analyst' && 'Analista IA'}
             {activeTab === 'playbooks' && 'Playbooks & Setups'}
           </h1>
 

@@ -14,12 +14,13 @@ import {
   Layers,
   Target,
   Dices,
+  Bot,
   RotateCcw,
   Heart,
   X,
 } from 'lucide-react';
 
-export type ActiveTab = 'dashboard' | 'calendar' | 'analytics' | 'monte-carlo' | 'playbooks';
+export type ActiveTab = 'dashboard' | 'calendar' | 'analytics' | 'monte-carlo' | 'ai-analyst' | 'playbooks';
 
 interface SidebarProps {
   activeTab: ActiveTab;
@@ -162,6 +163,7 @@ export function Sidebar({
             { id: 'calendar', label: 'Calendario', icon: CalendarIcon },
             { id: 'analytics', label: 'Análisis de Edge', icon: Target },
             { id: 'monte-carlo', label: 'Simulador Monte Carlo', icon: Dices },
+            { id: 'ai-analyst', label: 'Analista IA', icon: Bot },
             { id: 'playbooks', label: 'Playbooks & Setups', icon: Layers },
           ].map((item) => {
             const Icon = item.icon;
