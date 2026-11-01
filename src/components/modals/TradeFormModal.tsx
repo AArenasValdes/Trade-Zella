@@ -146,7 +146,17 @@ function TradeFormModalContent({
             : '1.0'
         ) as '1.0' | '1.5' | '2.0',
         outcomeMode: editingTrade.status === 'Win' ? 'TP' : 'SL',
-        rMultiple: Math.abs(editingTrade.rMultiple).toString() || '2.0',
+        rMultiple: (() => {
+          const val = Math.abs(editingTrade.rMultiple);
+          if (Number.isFinite(val)) {
+            return Number(val.toFixed(2)).toString();
+          }
+          const fallback = Number(editingTrade.plannedRR);
+          if (Number.isFinite(fallback)) {
+            return Number(fallback.toFixed(2)).toString();
+          }
+          return '2.0';
+        })(),
         playbookId: editingTrade.playbookId || '',
         pdArrays: editingTrade.pdArrays || [],
         checklistCompleted: editingTrade.checklistCompleted || [],
@@ -192,7 +202,10 @@ function TradeFormModalContent({
 
   // Calculate real-time derived return % and derived Net P&L
   const riskNum = parseFloat(form.riskPercentUsed) || 1.0;
-  const rMultipleNum = parseFloat(form.rMultiple) || 0;
+  const normalizedRMultiple = form.rMultiple.trim().replace(',', '.');
+  const parsedRMultiple = Number(normalizedRMultiple);
+  // A partial value (e.g. just a comma) must not render NaN% while typing.
+  const rMultipleNum = Number.isFinite(parsedRMultiple) ? parsedRMultiple : 0;
   const signedR = form.outcomeMode === 'TP' ? Math.abs(rMultipleNum) : -Math.abs(rMultipleNum);
   const derivedReturnPct = Number((riskNum * signedR).toFixed(2));
   const derivedPnl =
@@ -268,8 +281,14 @@ function TradeFormModalContent({
       return;
     }
 
-    if (rMultipleNum <= 0) {
-      setFormError('Ingresa un valor de R-Multiple válido mayor a 0 (ej: 2.0 o 1.0).');
+    const isUnchangedHistoricalZero = Boolean(
+      editingTrade &&
+      Number(Math.abs(editingTrade.rMultiple).toFixed(2)) === 0 &&
+      rMultipleNum === 0
+    );
+
+    if (!/^\d+(?:[.,]\d{1,2})?$/.test(form.rMultiple.trim()) || !Number.isFinite(rMultipleNum) || (rMultipleNum <= 0 && !isUnchangedHistoricalZero)) {
+      setFormError('Ingresa un R-Multiple positivo con hasta dos decimales (ej: 1,25 o 2.50).');
       return;
     }
 
@@ -310,7 +329,7 @@ function TradeFormModalContent({
     if (isHistoricalMonetary && editingTrade) {
       // Check if user changed risk or R-multiple
       const riskChanged = editingTrade.riskPercentUsed !== riskNum;
-      const rChanged = Math.abs(editingTrade.rMultiple) !== rMultipleNum;
+      const rChanged = Number(Math.abs(editingTrade.rMultiple).toFixed(2)) !== Number(rMultipleNum.toFixed(2));
       const outcomeChanged = (editingTrade.status === 'Win' ? 'TP' : 'SL') !== form.outcomeMode;
 
       if (!riskChanged && !rChanged && !outcomeChanged) {
@@ -357,8 +376,8 @@ function TradeFormModalContent({
       commission: finalCommission,
       commissionUnmeasured: finalCommissionUnmeasured,
       netPnl: finalNetPnl,
-      plannedRR: Math.abs(rMultipleNum),
-      rMultiple: signedR,
+      plannedRR: isUnchangedHistoricalZero && editingTrade ? editingTrade.plannedRR : Number(Math.abs(rMultipleNum).toFixed(2)),
+      rMultiple: isUnchangedHistoricalZero && editingTrade ? editingTrade.rMultiple : Number(signedR.toFixed(2)),
       status: form.outcomeMode === 'TP' ? 'Win' : 'Loss',
       killzone:
         form.selectedWindow === 'window_1'
@@ -692,13 +711,17 @@ function TradeFormModalContent({
                 </span>
               </div>
               <input
-                type="number"
-                step="0.1"
-                min="0.1"
+                type="text"
+                inputMode="decimal"
                 required
                 value={form.rMultiple}
-                onChange={(e) => setForm({ ...form, rMultiple: e.target.value })}
-                placeholder="Ej: 2.0 o 1.0"
+                onChange={(e) => {
+                  const sanitized = e.target.value.trim().replace(/\s+/g, '');
+                  if (/^\d*(?:[.,]\d{0,2})?$/.test(sanitized)) {
+                    setForm((prev) => ({ ...prev, rMultiple: sanitized }));
+                  }
+                }}
+                placeholder="Ej: 1,25 o 2.50"
                 className={`w-full px-3 py-2 text-xs rounded-xl border border-white/10 bg-zinc-900 text-zinc-100 font-bold font-mono focus:outline-none focus:ring-2 ${theme.ringClass}`}
               />
               <span className="text-[10px] text-zinc-500 block mt-0.5">

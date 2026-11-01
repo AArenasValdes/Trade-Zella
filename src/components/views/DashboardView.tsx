@@ -31,6 +31,117 @@ import {
   ArrowDownRight,
 } from 'lucide-react';
 
+interface CustomEquityTooltipProps {
+  active?: boolean;
+  payload?: Array<{ payload: EquityPointPct }>;
+}
+
+function CustomEquityTooltip({ active, payload }: CustomEquityTooltipProps) {
+  if (!active || !payload || payload.length === 0) return null;
+  const pt = payload[0]?.payload;
+  if (!pt) return null;
+
+  if (pt.tradeIndex === 0) {
+    return (
+      <div className="rounded-xl border border-white/15 bg-[#09090b]/95 p-3 text-xs shadow-2xl backdrop-blur-md">
+        <p className="font-semibold text-zinc-300">Punto Inicial · {pt.date}</p>
+        <p className="text-[11px] text-zinc-500 mt-1">Retorno Acumulado: 0.00%</p>
+      </div>
+    );
+  }
+
+  const isWindow = pt.timePrecision === 'window';
+  const timeDisplay = isWindow
+    ? pt.operationalWindow === 'window_2'
+      ? '10:35–11:00 NY (Ventana 2)'
+      : pt.operationalWindow === 'outside'
+      ? 'Fuera de ventana NY'
+      : '09:30–10:35 NY (Ventana 1)'
+    : pt.time ? `${pt.time} NY` : 'Sin hora registrada';
+
+  const retStr = formatReturnPct(pt.cumulativeReturnPct);
+  const tradeRetStr = formatReturnPct(pt.tradeReturnPct);
+  const pnlSign = pt.pnl >= 0 ? '+' : '-';
+  const pnlFormatted = `${pnlSign}$${Math.abs(pt.pnl).toFixed(2)}`;
+  const cumulativePnlSign = pt.cumulativePnl >= 0 ? '+' : '-';
+  const cumulativePnlFormatted = `${cumulativePnlSign}$${Math.abs(pt.cumulativePnl).toFixed(2)}`;
+
+  return (
+    <div className="min-w-[270px] rounded-xl border border-white/15 bg-[#09090b]/95 p-3.5 text-xs shadow-2xl backdrop-blur-md space-y-2.5">
+      <div className="border-b border-white/[0.08] pb-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-bold text-zinc-100 flex items-center gap-1.5">
+            <span className="text-zinc-400">Trade {pt.tradeLabel}</span>
+            <span>·</span>
+            <span>{pt.symbol}</span>
+            {pt.direction && (
+              <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${pt.direction === 'Long' ? 'text-emerald-400 bg-emerald-500/10' : 'text-rose-400 bg-rose-500/10'}`}>
+                {pt.direction}
+              </span>
+            )}
+          </span>
+          <span className="text-[11px] text-zinc-400 font-mono">{pt.date}</span>
+        </div>
+        <div className="mt-1.5 flex items-center gap-1.5">
+          <span className="text-[10px] text-zinc-500">Horario:</span>
+          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${isWindow ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20' : 'bg-sky-500/10 text-sky-300 border border-sky-500/20'}`}>
+            {timeDisplay}
+          </span>
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-zinc-400">Resultado Individual:</span>
+          <div className="flex items-center gap-1.5">
+            <span className={`font-mono font-bold ${pt.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {pnlFormatted} USD
+            </span>
+            <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${pt.estimatedPnl ? 'bg-amber-500/10 text-amber-300' : 'bg-emerald-500/10 text-emerald-300'}`}>
+              {pt.estimatedPnl ? '≈ Derivado' : 'Real'}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <span className="text-zinc-400">Retorno Individual:</span>
+          <span className={`font-mono font-bold ${pt.tradeReturnPct !== null && pt.tradeReturnPct >= 0 ? 'text-emerald-400' : pt.tradeReturnPct !== null ? 'text-rose-400' : 'text-zinc-500'}`}>
+            {tradeRetStr}
+          </span>
+        </div>
+
+        <div className="flex items-center justify-between pt-1 border-t border-white/[0.05]">
+          <span className="text-zinc-400">Retorno Acumulado:</span>
+          <span className={`font-mono font-bold ${pt.cumulativeReturnPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+            {retStr}
+          </span>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <span className="text-zinc-400">Total Acumulado:</span>
+          <div className="flex items-center gap-1.5">
+            <span className={`font-mono font-bold ${pt.cumulativePnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {cumulativePnlFormatted} USD
+            </span>
+            {pt.hasEstimatedInCumulative && (
+              <span className="text-[9px] text-amber-400" title="Incluye trades con resultado derivado">
+                (con est.)
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <span className="text-zinc-400">Drawdown:</span>
+          <span className="font-mono font-bold text-rose-400">
+            -{pt.drawdownPct.toFixed(2)}%
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function DashboardView() {
   const { trades, accounts, metrics, theme } = useTrading();
 
@@ -207,28 +318,7 @@ export function DashboardView() {
                 tick={{ fill: '#71717a', fontSize: 12 }}
                 tickFormatter={(val) => `${val >= 0 ? '+' : ''}${val}%`}
               />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: '#09090b',
-                  borderRadius: '12px',
-                  border: '1px solid rgba(255,255,255,0.12)',
-                  color: '#f4f4f5',
-                  fontSize: '12px',
-                }}
-                formatter={(value, name, item) => {
-                  const pt = item.payload as EquityPointPct;
-                  if (pt.tradeIndex === 0) {
-                    return ['0.00% (Inicio sesión)', 'Retorno Acumulado'];
-                  }
-                  const retStr = formatReturnPct(pt.cumulativeReturnPct);
-                  const pnlStr = pt.pnl >= 0 ? `+$${pt.pnl.toFixed(2)}` : `-$${Math.abs(pt.pnl).toFixed(2)}`;
-                  const tradeRetStr = formatReturnPct(pt.tradeReturnPct);
-                  return [
-                    `${retStr} (${pnlStr} acumulado: $${pt.cumulativePnl.toFixed(2)}) · Trade: ${tradeRetStr}`,
-                    'Retorno Acumulado',
-                  ];
-                }}
-              />
+              <Tooltip content={<CustomEquityTooltip />} />
               <Area
                 type="linear"
                 dataKey="cumulativeReturnPct"

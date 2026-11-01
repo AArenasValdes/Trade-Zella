@@ -8,6 +8,7 @@ import {
   extractNyDateKey,
   extractNyTime,
   getDateKeyInTimeZone,
+  isValidDateKey,
 } from '@/services/date-time-service';
 import {
   calculateDailyReturnPct,
@@ -131,13 +132,16 @@ export function CalendarView({
         monthlyReturnPct: null as number | null,
         greenDays: 0,
         redDays: 0,
+        weeklySummaries: [] as Array<{weekStart: string; weekEnd: string; count: number; returnPct: number | null; pnl: number}>,
+        weekendTrades: [] as Trade[],
       };
     }
 
     const [year, month] = calMonth.split('-').map(Number);
     const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
-    const firstDayWeekday =
-      (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() + 6) % 7;
+    const firstWeekday = (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() + 6) % 7;
+    // When a month starts on Saturday/Sunday, its first business day starts a new row.
+    const firstDayWeekday = firstWeekday < 5 ? firstWeekday : 0;
 
     let monthlyPnl = 0;
     let greenDays = 0;
@@ -155,6 +159,38 @@ export function CalendarView({
 
     const monthlyReturnPct = calculateMonthlyReturnPct(monthlyTrades, accounts);
 
+    // Group actual NY-dated trades by Monday. Weekend history remains in totals,
+    // even though weekends are hidden from the calendar grid.
+    const weekBuckets = new Map<string, Trade[]>();
+    const weekendTrades: Trade[] = [];
+    for (const trade of monthlyTrades) {
+      const nyDate = extractNyDateKey(trade.entryDate) || trade.entryDate.slice(0, 10);
+      if (!isValidDateKey(nyDate)) continue;
+      const [tradeYear, tradeMonth, tradeDay] = nyDate.split('-').map(Number);
+      const tradeDate = new Date(Date.UTC(tradeYear, tradeMonth - 1, tradeDay));
+      const dayOfWeek = tradeDate.getUTCDay();
+      if (dayOfWeek === 0 || dayOfWeek === 6) {
+        weekendTrades.push(trade);
+      }
+      const monday = new Date(tradeDate.getTime());
+      monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+      const key = monday.toISOString().slice(0, 10);
+      weekBuckets.set(key, [...(weekBuckets.get(key) ?? []), trade]);
+    }
+    const weeklySummaries = Array.from(weekBuckets, ([weekStart, weeklyTrades]) => {
+      const [sy, sm, sd] = weekStart.split('-').map(Number);
+      const mon = new Date(Date.UTC(sy, sm - 1, sd));
+      const sun = new Date(mon.getTime() + 6 * 86400000);
+      const weekEnd = sun.toISOString().slice(0, 10);
+      return {
+        weekStart,
+        weekEnd,
+        count: weeklyTrades.length,
+        returnPct: calculateMonthlyReturnPct(weeklyTrades, accounts),
+        pnl: weeklyTrades.reduce((sum, trade) => sum + trade.netPnl, 0),
+      };
+    }).sort((a, b) => a.weekStart.localeCompare(b.weekStart));
+
     return {
       map,
       daysInMonth,
@@ -163,6 +199,8 @@ export function CalendarView({
       monthlyReturnPct,
       greenDays,
       redDays,
+      weeklySummaries,
+      weekendTrades,
     };
   }, [trades, accounts, calMonth]);
 
@@ -263,7 +301,7 @@ export function CalendarView({
               </button>
             </div>
             <span className="text-xs text-zinc-500">
-              (Selecciona cualquier día para ver el detalle, registrar ejecuciones o anotar tu Plan Pre-Mercado)
+              Selecciona un día para inspeccionar operaciones o pulsa + para registrar una nueva.
             </span>
           </div>
 
@@ -288,9 +326,37 @@ export function CalendarView({
           </div>
         </div>
 
+        <div className="mb-5 rounded-xl border border-white/[0.07] bg-zinc-950/40 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-1 mb-2">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400">
+              Rendimiento semanal (fecha NY)
+            </h3>
+            <span className="text-[11px] text-zinc-500">
+              Operaciones correspondientes a este mes (semanas Lun–Dom)
+            </span>
+          </div>
+          {calendarData.weeklySummaries.length === 0 ? (
+            <p className="text-xs text-zinc-500">Sin operaciones registradas este mes.</p>
+          ) : (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+              {calendarData.weeklySummaries.map((week) => (
+                <div key={week.weekStart} className="rounded-lg border border-white/[0.07] bg-zinc-900/60 p-2.5">
+                  <p className="text-[11px] text-zinc-400">
+                    Semana {week.weekStart.slice(8, 10)}/{week.weekStart.slice(5, 7)} – {week.weekEnd.slice(8, 10)}/{week.weekEnd.slice(5, 7)}
+                  </p>
+                  <strong className={`text-sm tabular-nums ${week.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {formatReturnPct(week.returnPct, {fallback: `${week.pnl >= 0 ? '+' : '-'}$${Math.abs(week.pnl).toFixed(2)}`})}
+                  </strong>
+                  <p className="text-[10px] text-zinc-500">{week.count} {week.count === 1 ? 'trade' : 'trades'}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div className="overflow-x-auto pb-2">
-          <div className="grid min-w-[640px] grid-cols-7 gap-2.5">
-            {['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'].map((d) => (
+          <div className="grid min-w-[500px] grid-cols-5 gap-2.5">
+            {['Lun', 'Mar', 'Mié', 'Jue', 'Vie'].map((d) => (
               <div
                 key={d}
                 className="text-center text-xs font-bold uppercase tracking-wider text-zinc-500 py-1"
@@ -304,6 +370,9 @@ export function CalendarView({
             ))}
 
             {Array.from({ length: calendarData.daysInMonth }, (_, i) => {
+              const [year, month] = calMonth.split('-').map(Number);
+              const weekday = new Date(Date.UTC(year, month - 1, i + 1)).getUTCDay();
+              if (weekday === 0 || weekday === 6) return null;
               const dayNum = String(i + 1).padStart(2, '0');
               const dateStr = `${calMonth}-${dayNum}`;
               const isToday = dateStr === todayDate;
@@ -357,11 +426,25 @@ export function CalendarView({
                         Sin trade
                       </span>
                     )}
-                    {dayData && (
-                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/50 text-zinc-300 border border-white/[0.06]">
-                        {dayData.count}t
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {dayData && (
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/50 text-zinc-300 border border-white/[0.06]">
+                          {dayData.count}t
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        aria-label={`Registrar operación del ${dateStr}`}
+                        title="Registrar operación"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onOpenNewTradeForDate(dateStr);
+                        }}
+                        className={`rounded-lg border border-white/10 bg-zinc-800 p-1 text-zinc-200 hover:bg-zinc-700 focus:outline-none focus:ring-2 ${theme.ringClass}`}
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
 
                   {dayData && (
@@ -388,6 +471,14 @@ export function CalendarView({
               );
             })}
           </div>
+        </div>
+        <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-500">
+          <p>Sábados y domingos se ocultan en la cuadrícula, pero las operaciones históricas de esos días siguen incluidas en los totales mensuales y semanales.</p>
+          {calendarData.weekendTrades.length > 0 && (
+            <span className="rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-amber-300 font-medium">
+              {calendarData.weekendTrades.length} trade(s) en fin de semana este mes
+            </span>
+          )}
         </div>
       </div>
 

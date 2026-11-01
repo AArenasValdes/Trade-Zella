@@ -34,7 +34,51 @@ export function resolveTradeImage(trade: {
   return null;
 }
 
-// Soporta CSV exportado de Notion y de TradingView
+/**
+ * Splits a CSV line according to RFC 4180 rules, properly handling fields
+ * enclosed in double quotes that contain commas (such as "1,25").
+ */
+export function parseCsvLine(line: string, delimiter: string = ','): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++; // skip escaped quote
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === delimiter && !inQuotes) {
+      result.push(current.trim().replace(/^"|"$/g, '').trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim().replace(/^"|"$/g, '').trim());
+  return result;
+}
+
+/**
+ * Parses numeric values from CSV cells, supporting both dot and comma decimal separators
+ * (e.g. "1,25" -> 1.25, "-0,75" -> -0.75, "2.50" -> 2.5).
+ */
+export function parseCsvNumber(raw: string | undefined): number {
+  if (!raw) return NaN;
+  const clean = raw.trim().replace(/^"|"$/g, '').trim();
+  if (!clean) return NaN;
+  const normalized = clean.includes(',') && !clean.includes('.')
+    ? clean.replace(',', '.')
+    : clean.replace(/,/g, '');
+  const val = parseFloat(normalized);
+  return Number.isFinite(val) ? val : NaN;
+}
+
+// Soporta CSV exportado de Notion y de TradingView (con soporte para comas decimales y campos entrecomillados)
 export function parseTradingViewCSV(csvText: string, targetAccountId: string): Trade[] {
   const lines = csvText
     .split(/\r?\n/)
@@ -42,11 +86,12 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
     .filter(Boolean);
   if (lines.length < 2) return [];
 
-  const headers = lines[0].split(',').map((h) => h.trim().toLowerCase());
+  const delimiter = lines[0].includes(';') && !lines[0].includes(',') ? ';' : ',';
+  const headers = parseCsvLine(lines[0], delimiter).map((h) => h.toLowerCase());
   const imported: Trade[] = [];
 
   for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
+    const cols = parseCsvLine(lines[i], delimiter);
     if (cols.length < 2) continue;
 
     const row: Record<string, string> = {};
@@ -78,14 +123,14 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
         : 'Long';
 
     const entryPrice =
-      parseFloat(row['entry price'] || row['entrada'] || row['entry'] || row['price'] || '0') || 0;
+      parseCsvNumber(row['entry price'] || row['entrada'] || row['entry'] || row['price']) || 0;
     const exitPrice =
-      parseFloat(row['exit price'] || row['salida'] || row['exit'] || '0') || 0;
-    const stopLoss = parseFloat(row['stop loss'] || row['sl'] || '0') || 0;
-    const takeProfit = parseFloat(row['take profit'] || row['tp'] || '0') || 0;
+      parseCsvNumber(row['exit price'] || row['salida'] || row['exit']) || 0;
+    const stopLoss = parseCsvNumber(row['stop loss'] || row['sl']) || 0;
+    const takeProfit = parseCsvNumber(row['take profit'] || row['tp']) || 0;
     const size =
-      parseFloat(row['qty'] || row['size'] || row['lotes'] || row['contratos'] || '1') || 1;
-    const commission = parseFloat(row['commission'] || row['fee'] || '0') || 0;
+      parseCsvNumber(row['qty'] || row['size'] || row['lotes'] || row['contratos']) || 1;
+    const commission = parseCsvNumber(row['commission'] || row['fee']) || 0;
     const rawDate =
       row['time'] ||
       row['date'] ||
@@ -107,11 +152,13 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
       direction,
     });
 
-    const explicitPnl = parseFloat(
-      row['pnl'] || row['profit'] || row['net pnl'] || row['resultado'] || row['ganancia'] || 'NaN'
+    const explicitPnl = parseCsvNumber(
+      row['pnl'] || row['profit'] || row['net pnl'] || row['resultado'] || row['ganancia']
     );
     const finalNetPnl = !isNaN(explicitPnl) ? explicitPnl : calc.netPnl;
-    const explicitR = parseFloat(row['r'] || row['rr'] || row['r-multiple'] || 'NaN');
+    const explicitR = parseCsvNumber(
+      row['r'] || row['rr'] || row['r-multiple'] || row['r multiple'] || row['r_multiple']
+    );
 
     imported.push({
       id: `imp-${Date.now()}-${i}`,
