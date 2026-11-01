@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient as createServerSupabase } from '@/lib/supabase/server';
-import { createClient as createDirectSupabase } from '@supabase/supabase-js';
+import { createClient as createDirectSupabase, type SupabaseClient } from '@supabase/supabase-js';
 import { getSupabaseConfig, hasSupabaseConfig } from '@/lib/supabase/config';
+import { createAdminClient } from '@/lib/supabase/admin';
 import { mapTrade, type TradeRow } from '@/services/cloud-sync-service';
 import {
   reserveBudgetForQuery,
@@ -17,41 +18,52 @@ import {
 import type { Trade, TradeSourceType } from '@/types/trading';
 
 /**
- * Resolves the authenticated user from cookies or Authorization Bearer header.
+ * Resolves authenticated user from Bearer header or cookies,
+ * ensuring the JWT Bearer is attached to Postgrest requests for strict RLS.
  */
-async function resolveAuthUser(req: NextRequest) {
-  // 1. Try Bearer token from header
+async function resolveAuthUser(req: NextRequest): Promise<{
+  user: { id: string; email?: string } | null;
+  userClient: SupabaseClient | null;
+}> {
   const authHeader = req.headers.get('authorization');
+
+  // 1. Bearer token in header
   if (authHeader && authHeader.startsWith('Bearer ') && hasSupabaseConfig()) {
     const token = authHeader.slice(7).trim();
     if (token) {
       const { url, publishableKey } = getSupabaseConfig();
-      const directClient = createDirectSupabase(url, publishableKey, {
+      const userClient = createDirectSupabase(url, publishableKey, {
         auth: { persistSession: false },
+        global: {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
       });
-      const { data, error } = await directClient.auth.getUser(token);
+
+      const { data, error } = await userClient.auth.getUser(token);
       if (!error && data?.user) {
-        return { user: data.user, supabase: directClient };
+        return { user: data.user, userClient };
       }
     }
   }
 
-  // 2. Try cookie session
+  // 2. Cookie session fallback
   try {
-    const supabase = await createServerSupabase();
-    const { data: { user }, error } = await supabase.auth.getUser();
+    const serverClient = await createServerSupabase();
+    const { data: { user }, error } = await serverClient.auth.getUser();
     if (!error && user) {
-      return { user, supabase };
+      return { user, userClient: serverClient };
     }
   } catch {
-    // Supabase cookies not configured or invalid
+    // Session not found
   }
 
-  return { user: null, supabase: null };
+  return { user: null, userClient: null };
 }
 
 export async function GET(req: NextRequest) {
-  const { user, supabase } = await resolveAuthUser(req);
+  const { user } = await resolveAuthUser(req);
   if (!user) {
     return NextResponse.json(
       { error: 'unauthorized', message: 'Inicia sesión en Martin OS para consultar el presupuesto de IA.' },
@@ -59,13 +71,14 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const budget = await getBudgetStatus(user.id, supabase);
+  const adminClient = createAdminClient();
+  const budget = await getBudgetStatus(user.id, adminClient);
   return NextResponse.json({ budget });
 }
 
 export async function POST(req: NextRequest) {
   // 1. Authenticate user
-  const { user, supabase } = await resolveAuthUser(req);
+  const { user, userClient } = await resolveAuthUser(req);
   if (!user) {
     return NextResponse.json(
       { error: 'unauthorized', message: 'Inicia sesión en Martin OS para consultar al Analista IA.' },
@@ -99,28 +112,31 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Environment defaults strictly to Real (V3 segregation compliant)
   const targetEnv: TradeSourceType | 'All' =
-    body.environment === 'real' ||
     body.environment === 'backtest' ||
     body.environment === 'demo' ||
-    body.environment === 'unclassified'
+    body.environment === 'unclassified' ||
+    body.environment === 'All'
       ? body.environment
-      : 'All';
+      : 'real';
 
   // 3. Atomically check and reserve budget before calling DeepSeek
+  const adminClient = createAdminClient();
   const reservation = await reserveBudgetForQuery({
     userId: user.id,
-    supabaseClient: supabase,
+    supabaseClient: adminClient,
   });
 
   if (!reservation.ok) {
+    const isBudgetUnavailable = reservation.error === 'budget_unavailable';
     return NextResponse.json(
       {
         error: reservation.error,
         message: reservation.message,
         budget: reservation.budgetStatus,
       },
-      { status: 429 }
+      { status: isBudgetUnavailable ? 503 : 429 }
     );
   }
 
@@ -130,7 +146,7 @@ export async function POST(req: NextRequest) {
     await refundFailedQuery({
       reservationId: reservation.reservationId,
       userId: user.id,
-      supabaseClient: supabase,
+      supabaseClient: adminClient,
       reason: 'api_key_missing',
     });
 
@@ -145,11 +161,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 5. Query user's trades securely on server (tenant-isolated by user_id)
+  // 5. Query user's trades securely on server (tenant-isolated by user_id and bearer JWT)
   let trades: Trade[] = [];
   try {
-    if (supabase) {
-      const { data, error } = await supabase
+    if (userClient) {
+      const { data, error } = await userClient
         .from('trades')
         .select('*')
         .eq('user_id', user.id)
@@ -163,7 +179,7 @@ export async function POST(req: NextRequest) {
     // If Supabase query fails, continue with empty or partial trades
   }
 
-  // 6. Build grounding context using verified calculation engines
+  // 6. Build grounding context using verified calculation engines (Real default)
   const { systemPrompt, tradeLookup } = buildAnalystGroundingContext(trades, targetEnv);
 
   // 7. Single call to DeepSeek Flash (no tool loops, thinking disabled, max 800 tokens)
@@ -174,14 +190,14 @@ export async function POST(req: NextRequest) {
       userMessage: message,
     });
 
-    // 8. Settle reservation with exact token counts and peak rates
+    // 8. Settle reservation with exact token counts and official rates
     const settlement = await settleCompletedQuery({
       reservationId: reservation.reservationId,
       userId: user.id,
       promptTokens: chatResult.promptTokens,
       completionTokens: chatResult.completionTokens,
       queryPreview: message,
-      supabaseClient: supabase,
+      supabaseClient: adminClient,
     });
 
     // Extract trade references that actually exist in user's trades
@@ -207,7 +223,7 @@ export async function POST(req: NextRequest) {
     await refundFailedQuery({
       reservationId: reservation.reservationId,
       userId: user.id,
-      supabaseClient: supabase,
+      supabaseClient: adminClient,
       reason: errorMessage,
     });
 

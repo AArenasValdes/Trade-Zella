@@ -1,3 +1,5 @@
+process.env.NODE_ENV = 'test';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -52,21 +54,28 @@ function createMockTrade(overrides = {}) {
   };
 }
 
-test('1. Tarifas punta conservadoras de DeepSeek: cálculo exacto de costo en USD', () => {
-  // 1.000 tokens prompt ($0.55 / 1M) + 500 tokens completion ($2.19 / 1M)
-  // 1000 * 0.00000055 = 0.00055
+test('1. Tarifas oficiales y margen de reserva de DeepSeek: cálculo exacto de costo en USD', () => {
+  // Tarifas oficiales: $0.30 / 1M in ($0.00000030) + $1.20 / 1M out ($0.00000120)
+  // 1.000 tokens prompt * 0.00000030 = 0.000300
+  // 500 tokens completion * 0.00000120 = 0.000600
+  // Total oficial = 0.000900 USD
+  const officialCost = calculateDeepSeekCost(1000, 500, 'official');
+  assert.equal(officialCost, 0.000900);
+
+  // Tarifa punta conservadora de reserva: $0.55 / 1M in + $2.19 / 1M out
+  // 1000 * 0.00000055 = 0.000550
   // 500 * 0.00000219 = 0.001095
-  // Total = 0.001645 USD
-  const cost = calculateDeepSeekCost(1000, 500);
-  assert.equal(cost, 0.001645);
+  // Total conservador = 0.001645 USD
+  const conservativeCost = calculateDeepSeekCost(1000, 500, 'conservative');
+  assert.equal(conservativeCost, 0.001645);
 
   // Consulta máxima objetivo (8.000 input + 800 output)
-  const maxCost = calculateDeepSeekCost(8000, 800);
-  // 8000 * 0.00000055 = 0.0044
-  // 800 * 0.00000219 = 0.001752
-  // Total = 0.006152 USD (menos de 1 centavo)
-  assert.equal(maxCost, 0.006152);
-  assert.ok(maxCost < 0.01);
+  const maxOfficial = calculateDeepSeekCost(8000, 800, 'official');
+  // 8000 * 0.00000030 = 0.002400
+  // 800 * 0.00000120 = 0.000960
+  // Total = 0.003360 USD
+  assert.equal(maxOfficial, 0.003360);
+  assert.ok(maxOfficial < 0.01);
 });
 
 test('2. Rate limit estricto de 20 consultas por usuario al día', async () => {
@@ -96,16 +105,15 @@ test('3. Bloqueo por presupuesto mensual agotado ($5.00 USD máximo)', async () 
   __resetInMemoryLedgerForTesting();
   const userId = 'user-budget-test';
 
-  // Simular gasto previo acumulado de $4.995 USD
+  // Reservar y asentar un gasto grande que casi agota el presupuesto ($4.995 gastados)
   const res = await reserveBudgetForQuery({ userId });
   assert.equal(res.ok, true);
 
-  // Asentar un gasto grande que casi agota el presupuesto
+  // 16.650.000 tokens a $0.30/M = $4.995 USD
   await settleCompletedQuery({
     reservationId: res.reservationId,
     userId,
-    // 9.080.000 tokens prompt a $0.55/M = ~$4.994 USD
-    promptTokens: 9080000,
+    promptTokens: 16650000,
     completionTokens: 0,
   });
 
@@ -129,7 +137,7 @@ test('4. Atomicidad y prevención de sobregiro por solicitudes simultáneas (rac
   await settleCompletedQuery({
     reservationId: primerRes.reservationId,
     userId,
-    promptTokens: 9063636, // ~$4.985 USD
+    promptTokens: 16616666, // ~$4.985 USD
     completionTokens: 0,
   });
 
@@ -182,7 +190,7 @@ test('6. Sanitización contra Prompt Injection en notas de operaciones', () => {
   assert.ok(clean2.includes('nota:'));
 });
 
-test('7. Context builder: verifica métricas reales y advertencias de muestra', () => {
+test('7. Context builder: verifica Real por defecto, métricas cuantitativas y advertencias de muestra', () => {
   // Crear 8 operaciones (muestra pequeña N < 10)
   const trades = Array.from({ length: 8 }, (_, i) =>
     createMockTrade({
@@ -197,6 +205,7 @@ test('7. Context builder: verifica métricas reales y advertencias de muestra', 
 
   assert.equal(context.sampleSummary.totalTrades, 8);
   assert.equal(context.sampleSummary.realTradesCount, 8);
+  assert.ok(context.systemPrompt.includes('ENTORNO ACTIVO ANALIZADO: REAL'));
   assert.ok(context.systemPrompt.includes('Total Operaciones: 8'));
   assert.ok(context.systemPrompt.includes('Breaker Block: N=4'));
   assert.ok(context.systemPrompt.includes('Key Level: N=4'));
@@ -233,7 +242,6 @@ test('9. Validación de llamada sin API key: rechazo antes de la red', async () 
 });
 
 test('10. Mock de llamada DeepSeek Flash: modo no-thinking y límite 800 tokens', async () => {
-  // Mock global fetch para simular respuesta DeepSeek sin consumir saldo real
   const originalFetch = globalThis.fetch;
   let capturedBody = null;
 
@@ -274,7 +282,6 @@ test('10. Mock de llamada DeepSeek Flash: modo no-thinking y límite 800 tokens'
     assert.equal(result.completionTokens, 150);
     assert.ok(result.answer.includes('Breaker Block'));
 
-    // Verificar parámetros exactos enviados a la API
     assert.equal(capturedBody.model, 'deepseek-flash');
     assert.deepEqual(capturedBody.thinking, { type: 'disabled' }, 'thinking debe estar deshabilitado');
     assert.equal(capturedBody.max_tokens, 800, 'max_tokens debe ser 800');

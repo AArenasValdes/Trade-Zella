@@ -64,7 +64,7 @@ export function AiAnalystView({ onInspectTrade }: AiAnalystViewProps) {
   ]);
 
   const [inputValue, setInputValue] = useState('');
-  const [selectedEnv, setSelectedEnv] = useState<TradeSourceType | 'All'>('All');
+  const [selectedEnv, setSelectedEnv] = useState<TradeSourceType>('real');
   const [isLoading, setIsLoading] = useState(false);
   const [budgetStatus, setBudgetStatus] = useState<BudgetStatus | null>(null);
   const [serverNotice, setServerNotice] = useState<string | null>(null);
@@ -352,7 +352,7 @@ export function AiAnalystView({ onInspectTrade }: AiAnalystViewProps) {
               Entorno analizado:
             </span>
             <div className="flex gap-1">
-              {(['All', 'real', 'backtest', 'demo', 'unclassified'] as const).map((env) => (
+              {(['real', 'backtest', 'demo', 'unclassified'] as const).map((env) => (
                 <button
                   key={env}
                   onClick={() => setSelectedEnv(env)}
@@ -362,13 +362,13 @@ export function AiAnalystView({ onInspectTrade }: AiAnalystViewProps) {
                       : 'bg-zinc-900/60 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
                   }`}
                 >
-                  {env === 'All' ? 'Todos' : env === 'real' ? 'Real' : env === 'backtest' ? 'Backtesting' : env === 'demo' ? 'Demo' : 'Sin clasificar'}
+                  {env === 'real' ? 'Real' : env === 'backtest' ? 'Backtesting' : env === 'demo' ? 'Demo' : 'Sin clasificar'}
                 </button>
               ))}
             </div>
           </div>
           <span className="text-[10px] text-zinc-500 font-mono hidden sm:inline">
-            Tarifa punta conservadora: $0.55/M in · $2.19/M out
+            Tarifa oficial: $0.30/M in · $1.20/M out (reserva: $0.010)
           </span>
         </div>
       </div>
