@@ -51,15 +51,21 @@ function makeTrade(overrides = {}) {
   };
 }
 
-test('1. resolvePrimaryModel selecciona un único modelo principal sin duplicación', () => {
-  // Trade with both Breaker Block and Key Level
-  const multiTrade = makeTrade({
+test('1. resolvePrimaryModel selecciona un único modelo principal sin duplicación respetando el primer registrado', () => {
+  // Trade with Key Level registered first, followed by Breaker Block
+  const multiTradeKL = makeTrade({
     pdArrays: ['Key Level', 'Breaker Block', 'FVG (Fair Value Gap)'],
   });
-  // Should resolve to Breaker Block based on priority order without double counting
-  assert.equal(resolvePrimaryModel(multiTrade), 'Breaker Block');
+  // Should resolve to Key Level because it is the first primary model in pdArrays
+  assert.equal(resolvePrimaryModel(multiTradeKL), 'Key Level');
 
-  // Trade with only Key Level
+  // Trade with Breaker Block registered first, followed by Key Level
+  const multiTradeBB = makeTrade({
+    pdArrays: ['Breaker Block', 'Key Level', 'FVG (Fair Value Gap)'],
+  });
+  assert.equal(resolvePrimaryModel(multiTradeBB), 'Breaker Block');
+
+  // Trade with other confluences preceding the primary model
   const klTrade = makeTrade({
     pdArrays: ['Liquidity Sweep (BSL/SSL)', 'Key Level'],
   });
@@ -166,7 +172,7 @@ test('4. calculateCohortMetrics excluye hasDataConflict=true y excluye rUnrecord
   assert.match(metrics.confidenceWarning, /Muestra muy reducida/);
 });
 
-test('5. calculateModelComparison no proclama superioridad con muestra pequeña (< 10 trades)', () => {
+test('5. calculateModelComparison no proclama superioridad con muestra pequeña (< 10 trades con R)', () => {
   const trades = [
     // 3 Breaker Block trades (all wins)
     makeTrade({ pdArrays: ['Breaker Block'], status: 'Win', rMultiple: 2 }),
@@ -180,13 +186,27 @@ test('5. calculateModelComparison no proclama superioridad con muestra pequeña 
   const comparison = calculateModelComparison(trades);
 
   assert.equal(comparison.breakerBlock.totalTrades, 3);
+  assert.equal(comparison.breakerBlock.rSampleSize, 3);
   assert.equal(comparison.breakerBlock.winRate, 100);
   assert.equal(comparison.keyLevel.totalTrades, 2);
+  assert.equal(comparison.keyLevel.rSampleSize, 2);
   assert.equal(comparison.keyLevel.winRate, 50);
 
   // Must NOT proclaim Breaker Block as statistically superior due to small sample
   assert.equal(comparison.verdict.hasSufficientData, false);
-  assert.match(comparison.verdict.description, /Muestra insuficiente para concluir ventaja estadística/);
+  assert.equal(comparison.verdict.leaderLabel, undefined);
+  assert.match(comparison.verdict.description, /Muestra insuficiente de operaciones con R conocido/);
+
+  // When trades have totalTrades >= 10 but rSampleSize < 10 (e.g. rUnrecorded)
+  const tradesWithUnrecorded = [
+    ...Array(10).fill(null).map(() => makeTrade({ pdArrays: ['Breaker Block'], status: 'Win', rUnrecorded: true })),
+    ...Array(10).fill(null).map(() => makeTrade({ pdArrays: ['Key Level'], status: 'Win', rMultiple: 2 })),
+  ];
+  const comparisonUnrecorded = calculateModelComparison(tradesWithUnrecorded);
+  assert.equal(comparisonUnrecorded.breakerBlock.totalTrades, 10);
+  assert.equal(comparisonUnrecorded.breakerBlock.rSampleSize, 0);
+  assert.equal(comparisonUnrecorded.verdict.hasSufficientData, false);
+  assert.equal(comparisonUnrecorded.verdict.leaderLabel, undefined);
 });
 
 test('6. filterAnalyticsTrades filtra estrictamente por fecha, símbolo, modelo y ventana', () => {

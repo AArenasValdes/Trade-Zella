@@ -650,7 +650,11 @@ function CohortCard({
             </span>
             <span
               className={`text-base font-extrabold tabular-nums ${
-                cohort.expectancyR >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                cohort.rSampleSize === 0
+                  ? 'text-zinc-500'
+                  : cohort.expectancyR >= 0
+                  ? 'text-emerald-400'
+                  : 'text-rose-400'
               }`}
             >
               {cohort.rSampleSize > 0
@@ -658,7 +662,7 @@ function CohortCard({
                 : 'N/A'}
             </span>
             <span className="text-[10px] text-zinc-500 block mt-0.5 tabular-nums">
-              Avg R: {cohort.avgR > 0 ? `+${cohort.avgR}` : cohort.avgR}R
+              Avg R: {cohort.rSampleSize > 0 ? `${cohort.avgR > 0 ? '+' : ''}${cohort.avgR}R` : 'N/A'}
             </span>
           </div>
 
@@ -667,14 +671,16 @@ function CohortCard({
               Profit Factor
             </span>
             <span className="text-base font-extrabold text-zinc-100 tabular-nums">
-              {isLossFree
+              {cohort.rSampleSize === 0
+                ? 'N/A'
+                : isLossFree
                 ? '∞ (0 SL)'
                 : cohort.profitFactorR !== null
                 ? cohort.profitFactorR.toFixed(2)
                 : 'N/A'}
             </span>
             <span className="text-[10px] text-zinc-500 block mt-0.5 tabular-nums">
-              Total R: {cohort.totalR > 0 ? `+${cohort.totalR}` : cohort.totalR}R
+              Total R: {cohort.rSampleSize > 0 ? `${cohort.totalR > 0 ? '+' : ''}${cohort.totalR}R` : 'N/A'}
             </span>
           </div>
         </div>

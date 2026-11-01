@@ -5,10 +5,10 @@ import { useTrading } from '@/context/TradingContext';
 import { PD_ARRAYS } from '@/config/ict-constants';
 import { SetupGrade } from '@/types/trading';
 import { calculateConsolidatedReturnPct, formatReturnPct } from '@/services/financial-engine';
-import { Layers, Trash2, CheckCircle2 } from 'lucide-react';
+import { Layers, CheckCircle2 } from 'lucide-react';
 
 export function PlaybooksView() {
-  const { trades, accounts, playbooks, deletePlaybook, theme } = useTrading();
+  const { trades, accounts, playbooks, theme } = useTrading();
 
   const playbookStats = useMemo(() => {
     return playbooks.map((pb) => {
@@ -146,14 +146,6 @@ export function PlaybooksView() {
                       {pb.name}
                     </h3>
                   </div>
-                  {playbooks.length > 0 && (
-                    <button
-                      onClick={() => deletePlaybook(pb.id)}
-                      className="p-1.5 text-zinc-500 hover:text-rose-400 rounded-lg cursor-pointer"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
                 </div>
                 <p className="text-xs text-zinc-400 mt-1">{pb.description}</p>
 

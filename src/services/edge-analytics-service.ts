@@ -1,7 +1,6 @@
 import type {
   Trade,
   PsychologyTag,
-  PDArray,
 } from '../types/trading.ts';
 import {
   isTradeIncludedInAggregates,
@@ -81,15 +80,16 @@ export const INITIAL_ANALYTICS_FILTERS: AnalyticsFilters = {
 
 /**
  * Resolves a single primary model per trade to prevent double-counting across cohorts.
- * Prioritizes Breaker Block, Key Level, and BPR in order. If none match, classifies as 'Sin modelo registrado'.
+ * Respects the first primary model registered within trade.pdArrays.
+ * If none match a known primary entry model, classifies as 'Sin modelo registrado'.
  */
 export function resolvePrimaryModel(trade: Trade): PrimaryEntryModel {
   if (!trade.pdArrays || trade.pdArrays.length === 0) {
     return 'Sin modelo registrado';
   }
-  for (const model of PRIMARY_ENTRY_MODELS) {
-    if (trade.pdArrays.includes(model as PDArray)) {
-      return model;
+  for (const item of trade.pdArrays) {
+    if ((PRIMARY_ENTRY_MODELS as readonly string[]).includes(item)) {
+      return item as PrimaryEntryModel;
     }
   }
   return 'Sin modelo registrado';
@@ -286,25 +286,30 @@ export function calculateModelComparison(
   const otherModels = [bpr, unclassified].filter((m) => m.totalTrades > 0);
   const allCohorts = [breakerBlock, keyLevel, ...otherModels];
 
-  // Statistical confidence and objective comparison
-  const hasSufficientData = breakerBlock.totalTrades >= 10 && keyLevel.totalTrades >= 10;
+  // Statistical confidence and objective comparison: requires >= 10 trades with known R
+  const hasSufficientData =
+    breakerBlock.rSampleSize >= 10 && keyLevel.rSampleSize >= 10;
   let verdictDescription = '';
   let leaderLabel: string | undefined;
 
   if (breakerBlock.totalTrades === 0 && keyLevel.totalTrades === 0) {
-    verdictDescription = 'Sin operaciones registradas para Breaker Block o Key Level en la muestra seleccionada.';
+    verdictDescription =
+      'Sin operaciones registradas para Breaker Block o Key Level en la muestra seleccionada.';
+  } else if (breakerBlock.rSampleSize === 0 && keyLevel.rSampleSize === 0) {
+    verdictDescription =
+      'Sin operaciones con R conocido para evaluar y comparar expectativas matemáticas.';
   } else if (!hasSufficientData) {
-    verdictDescription = `Muestra insuficiente para concluir ventaja estadística (Breaker Block n=${breakerBlock.totalTrades}, Key Level n=${keyLevel.totalTrades}). Se requiere un mínimo de 10 operaciones por cohorte para evaluar edge preliminar.`;
+    verdictDescription = `Muestra insuficiente de operaciones con R conocido para evaluar expectativa matemática y concluir ventaja estadística (Breaker Block n_R=${breakerBlock.rSampleSize}, Key Level n_R=${keyLevel.rSampleSize}). Se requiere un mínimo de 10 operaciones con R por cohorte.`;
   } else {
-    // Both have >= 10 trades: compare expectancy and profit factor
+    // Both have >= 10 trades with known R: compare expectancy
     if (breakerBlock.expectancyR > keyLevel.expectancyR) {
       leaderLabel = 'Breaker Block';
-      verdictDescription = `Breaker Block muestra mayor expectativa matemática (${breakerBlock.expectancyR > 0 ? '+' : ''}${breakerBlock.expectancyR}R vs ${keyLevel.expectancyR > 0 ? '+' : ''}${keyLevel.expectancyR}R de Key Level) con n=${breakerBlock.totalTrades} trades.`;
+      verdictDescription = `Breaker Block muestra mayor expectativa matemática (${breakerBlock.expectancyR > 0 ? '+' : ''}${breakerBlock.expectancyR}R vs ${keyLevel.expectancyR > 0 ? '+' : ''}${keyLevel.expectancyR}R de Key Level) con n_R=${breakerBlock.rSampleSize} trades evaluados.`;
     } else if (keyLevel.expectancyR > breakerBlock.expectancyR) {
       leaderLabel = 'Key Level';
-      verdictDescription = `Key Level muestra mayor expectativa matemática (${keyLevel.expectancyR > 0 ? '+' : ''}${keyLevel.expectancyR}R vs ${breakerBlock.expectancyR > 0 ? '+' : ''}${breakerBlock.expectancyR}R de Breaker Block) con n=${keyLevel.totalTrades} trades.`;
+      verdictDescription = `Key Level muestra mayor expectativa matemática (${keyLevel.expectancyR > 0 ? '+' : ''}${keyLevel.expectancyR}R vs ${breakerBlock.expectancyR > 0 ? '+' : ''}${breakerBlock.expectancyR}R de Breaker Block) con n_R=${keyLevel.rSampleSize} trades evaluados.`;
     } else {
-      verdictDescription = `Ambos modelos presentan expectativa matemática idéntica (${breakerBlock.expectancyR}R) en la muestra evaluada.`;
+      verdictDescription = `Ambos modelos presentan expectativa matemática idéntica (${breakerBlock.expectancyR}R) en la muestra evaluada (n_R=${breakerBlock.rSampleSize}).`;
     }
   }
 
