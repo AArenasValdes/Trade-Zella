@@ -240,7 +240,7 @@ export async function callDeepSeekFlash(params: {
     encoder.encode(userMessage.slice(0, 1000)).length + 256;
   if (inputByteUpperBound > MAX_INPUT_TOKENS_LIMIT) {
     throw new DeepSeekPreflightError(
-      `El contexto de entrada supera el límite conservador de ${MAX_INPUT_TOKENS_LIMIT} tokens. Reduce los datos enviados.`
+      `El contexto de entrada excede el límite máximo de ${MAX_INPUT_TOKENS_LIMIT} tokens (cota conservadora UTF-8). Reduce los datos enviados.`
     );
   }
 
