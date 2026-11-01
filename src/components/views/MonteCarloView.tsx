@@ -66,7 +66,7 @@ function TrajectoryTooltip({ active, payload, label }: TrajectoryTooltipProps) {
         <span className="text-[10px] text-zinc-500 font-mono">Dispersión en R</span>
       </div>
       <div className="space-y-1 font-mono pt-0.5">
-        <div className="flex justify-between items-center text-emerald-400">
+        <div className={`flex justify-between items-center ${p95 !== undefined && p95 < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
           <span className="text-[11px] text-zinc-400">P95 (Favorable 5%):</span>
           <span className="font-bold">{p95 !== undefined ? `${p95 >= 0 ? '+' : ''}${p95.toFixed(2)}R` : '-'}</span>
         </div>
@@ -164,6 +164,15 @@ export function MonteCarloView() {
       seed: normalizeSeed(seedInput),
     });
   }, [trades, environment, selectedModel, horizon, iterations, seedInput]);
+
+  // Augmented trajectory points with range tuple [p5, p95] for Recharts range area
+  const chartTrajectory = useMemo(() => {
+    if (simulation.status !== 'success') return [];
+    return simulation.trajectory.map((point) => ({
+      ...point,
+      p5ToP95Range: [point.p5, point.p95] as [number, number],
+    }));
+  }, [simulation]);
 
   const handleRegenerateSeed = () => {
     const newSeed = Math.floor(Math.random() * 90000) + 10000;
@@ -396,7 +405,7 @@ export function MonteCarloView() {
                 {simulation.minRequired} ops
               </div>
               <p className="text-[11px] text-zinc-500">
-                Requerido para generar remuestreos bootstrap estables y no sesgados.
+                Mínimo operativo de visualización técnica; no garantiza significancia estadística ni ausencia de sesgo muestral.
               </p>
             </div>
           </div>
@@ -452,8 +461,9 @@ export function MonteCarloView() {
                 </div>
                 <div className="flex justify-between text-zinc-400">
                   <span>P95 (Favorable 5%):</span>
-                  <span className="text-emerald-400 font-bold">
-                    +{simulation.metrics.cumulativeR.p95.toFixed(2)}R
+                  <span className={`${simulation.metrics.cumulativeR.p95 >= 0 ? 'text-emerald-400' : 'text-rose-400'} font-bold`}>
+                    {simulation.metrics.cumulativeR.p95 >= 0 ? '+' : ''}
+                    {simulation.metrics.cumulativeR.p95.toFixed(2)}R
                   </span>
                 </div>
                 <div className="flex justify-between text-zinc-400 pt-0.5 border-t border-white/[0.04]">
@@ -611,7 +621,7 @@ export function MonteCarloView() {
             <div className="h-80 sm:h-96 w-full pt-2">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart
-                  data={simulation.trajectory}
+                  data={chartTrajectory}
                   margin={{ top: 10, right: 15, left: -10, bottom: 0 }}
                 >
                   <defs>
@@ -635,14 +645,23 @@ export function MonteCarloView() {
                     tickFormatter={(val) => `${val >= 0 ? '+' : ''}${val}R`}
                   />
                   <Tooltip content={<TrajectoryTooltip />} />
-                  {/* Área sombreada entre P95 y P5 */}
+                  {/* Área de rango sombreada estrictamente entre P5 y P95 */}
                   <Area
+                    type="monotone"
+                    dataKey="p5ToP95Range"
+                    stroke="none"
+                    fill="url(#mcBandGradient)"
+                    fillOpacity={1}
+                    isAnimationActive={false}
+                    name="intervaloP5P95"
+                  />
+                  <Line
                     type="monotone"
                     dataKey="p95"
                     stroke="#10b981"
                     strokeWidth={1.5}
                     strokeDasharray="4 4"
-                    fill="url(#mcBandGradient)"
+                    dot={false}
                     name="p95"
                   />
                   <Line
@@ -773,8 +792,9 @@ export function MonteCarloView() {
                       {simulation.metrics.cumulativeR.p75 >= 0 ? '+' : ''}
                       {simulation.metrics.cumulativeR.p75.toFixed(2)}R
                     </td>
-                    <td className="py-3 px-3 text-emerald-400 font-bold">
-                      +{simulation.metrics.cumulativeR.p95.toFixed(2)}R
+                    <td className={`py-3 px-3 ${simulation.metrics.cumulativeR.p95 >= 0 ? 'text-emerald-400' : 'text-rose-400'} font-bold`}>
+                      {simulation.metrics.cumulativeR.p95 >= 0 ? '+' : ''}
+                      {simulation.metrics.cumulativeR.p95.toFixed(2)}R
                     </td>
                     <td className="py-3 px-3 text-zinc-400">
                       {simulation.metrics.cumulativeR.mean >= 0 ? '+' : ''}
@@ -784,7 +804,8 @@ export function MonteCarloView() {
                       {simulation.metrics.cumulativeR.min.toFixed(2)}R
                     </td>
                     <td className="py-3 px-3 text-zinc-500">
-                      +{simulation.metrics.cumulativeR.max.toFixed(2)}R
+                      {simulation.metrics.cumulativeR.max >= 0 ? '+' : ''}
+                      {simulation.metrics.cumulativeR.max.toFixed(2)}R
                     </td>
                   </tr>
 
