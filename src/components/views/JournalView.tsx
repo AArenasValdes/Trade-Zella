@@ -50,7 +50,8 @@ export function JournalView({ onInspectTrade, onEditTrade }: JournalViewProps) {
     filters.playbookId !== 'All' ||
     filters.symbol !== '' ||
     filters.dateFrom !== '' ||
-    filters.dateTo !== '';
+    filters.dateTo !== '' ||
+    (filters.sourceType && filters.sourceType !== 'All');
 
   const sortedTrades = useMemo(() => {
     const copy = [...filteredTrades];
@@ -148,6 +149,23 @@ export function JournalView({ onInspectTrade, onEditTrade }: JournalViewProps) {
                 {kz}
               </option>
             ))}
+          </select>
+
+          <select
+            value={filters.sourceType || 'All'}
+            onChange={(e) =>
+              setFilters((prev) => ({
+                ...prev,
+                sourceType: e.target.value as TradeFilters['sourceType'],
+              }))
+            }
+            className="px-3 py-2 text-xs rounded-xl bg-zinc-900 border border-white/[0.08] text-zinc-200 font-medium focus:outline-none"
+          >
+            <option value="All">Entorno: Todos</option>
+            <option value="real">Real</option>
+            <option value="demo">Demo</option>
+            <option value="backtest">Backtesting</option>
+            <option value="unclassified">Sin clasificar</option>
           </select>
 
           <select

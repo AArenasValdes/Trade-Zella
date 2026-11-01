@@ -5,6 +5,7 @@ import type {
   ICTPlaybook,
   PersonalTradingRule,
   PnlProvenance,
+  TradeSourceType,
 } from '../types/trading.ts';
 import {
   autoCalculateTradeMath,
@@ -85,8 +86,30 @@ export function parseCsvNumber(raw: string | undefined): number {
   return Number.isFinite(val) ? val : NaN;
 }
 
+export function generateTradeDeduplicationKey(trade: {
+  entryDate: string;
+  symbol: string;
+  direction: string;
+  entryPrice?: number;
+  exitPrice?: number;
+  sourceType?: string;
+}): string {
+  const datePart = trade.entryDate.replace(' ', 'T').slice(0, 16);
+  const symPart = trade.symbol.trim().toUpperCase();
+  const dirPart = (trade.direction || '').trim().toLowerCase();
+  const entryPart = Number(trade.entryPrice || 0).toFixed(4);
+  const exitPart = Number(trade.exitPrice || 0).toFixed(4);
+  const srcPart = (trade.sourceType || 'unclassified').trim().toLowerCase();
+  return `${datePart}_${symPart}_${dirPart}_${entryPart}_${exitPart}_${srcPart}`;
+}
+
 // Soporta CSV exportado de Notion y de TradingView (con soporte para comas decimales y campos entrecomillados)
-export function parseTradingViewCSV(csvText: string, targetAccountId: string): Trade[] {
+export function parseTradingViewCSV(
+  csvText: string,
+  targetAccountId: string,
+  defaultSourceType: TradeSourceType = 'unclassified',
+  existingTrades: readonly Trade[] = []
+): Trade[] {
   const lines = csvText
     .split(/\r?\n/)
     .map((l) => l.trim())
@@ -96,7 +119,9 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
   const delimiter = lines[0].includes(';') && !lines[0].includes(',') ? ';' : ',';
   const headers = parseCsvLine(lines[0], delimiter).map((h) => h.toLowerCase());
   const imported: Trade[] = [];
-
+  const seenKeys = new Set<string>(
+    existingTrades.map((t) => generateTradeDeduplicationKey(t))
+  );
   for (let i = 1; i < lines.length; i++) {
     const cols = parseCsvLine(lines[i], delimiter);
     if (cols.length < 2) continue;
@@ -141,14 +166,19 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
     const hasMeasuredCommission = !isNaN(rawCommission);
     const commission = hasMeasuredCommission ? rawCommission : 0;
 
-    const rawDate =
+    const rawDate = (
       row['time'] ||
       row['date'] ||
       row['fecha'] ||
       row['entry time'] ||
-      new Date().toISOString().slice(0, 16);
+      new Date().toISOString().slice(0, 16)
+    ).trim();
     const formattedDate = rawDate.includes('T')
       ? rawDate.slice(0, 16)
+      : rawDate.includes(' ')
+      ? (rawDate.replace(' ', 'T').length >= 16
+          ? rawDate.replace(' ', 'T').slice(0, 16)
+          : `${rawDate.slice(0, 10)}T09:30`)
       : `${rawDate.slice(0, 10)}T09:30`;
 
     const calc = autoCalculateTradeMath({
@@ -196,7 +226,52 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
       ? explicitPnl
       : hasPrices && calc.verifiedSpec
       ? calc.netPnl
-      : 0;
+      : 0;    const rawSource = (
+      row['source_type'] ||
+      row['source'] ||
+      row['entorno'] ||
+      row['environment'] ||
+      row['tipo'] ||
+      ''
+    ).trim().toLowerCase();
+
+    let sourceType: TradeSourceType = defaultSourceType;
+
+    if (defaultSourceType === 'backtest') {
+      if (rawSource === 'real' || rawSource === 'live' || rawSource === 'cuenta real') {
+        throw new Error('Archivo contradictorio: el CSV contiene operaciones con entorno "real" pero se intentó importar mediante el importador de Backtesting. Operación cancelada para proteger el registro real.');
+      }
+      if (rawSource === 'demo' || rawSource === 'paper') {
+        throw new Error('Archivo contradictorio: el CSV contiene operaciones con entorno "demo" pero se intentó importar mediante el importador de Backtesting. Operación cancelada.');
+      }
+      // When importing via backtest importer, classify exclusively as backtest
+      sourceType = 'backtest';
+    } else {
+      if (rawSource === 'backtest' || rawSource === 'backtesting' || rawSource === 'simulado' || rawSource === 'sim') {
+        sourceType = 'backtest';
+      } else if (rawSource === 'demo' || rawSource === 'paper') {
+        sourceType = 'demo';
+      } else if (rawSource === 'real' || rawSource === 'live' || rawSource === 'cuenta real') {
+        sourceType = 'real';
+      } else if (rawSource === 'unclassified' || rawSource === 'sin clasificar') {
+        sourceType = 'unclassified';
+      } else {
+        sourceType = defaultSourceType;
+      }
+    }
+
+    const dedupKey = generateTradeDeduplicationKey({
+      entryDate: formattedDate,
+      symbol,
+      direction,
+      entryPrice,
+      exitPrice,
+      sourceType,
+    });
+    if (seenKeys.has(dedupKey)) {
+      continue;
+    }
+    seenKeys.add(dedupKey);
 
     // Explicit outcome column
     const explicitStatusRaw = (
@@ -355,6 +430,7 @@ export function parseTradingViewCSV(csvText: string, targetAccountId: string): T
       durationMinutes: finalDuration,
       hasDataConflict,
       conflictReasons: hasDataConflict ? conflicts : undefined,
+      sourceType,
     });
   }
 

@@ -90,6 +90,7 @@ export interface TradeRow {
   conflict_reasons?: string[] | null;
   realized_net_return_pct?: number | null;
   duration_minutes?: number | null;
+  source_type?: string | null;
 }
 
 interface NoteRow {
@@ -218,6 +219,7 @@ export function mapTrade(row: TradeRow, signedScreenshotUrl?: string): Trade {
     conflictReasons: cleanStringArray(row.conflict_reasons),
     realizedNetReturnPct: row.realized_net_return_pct != null ? Number(row.realized_net_return_pct) : null,
     durationMinutes: row.duration_minutes != null ? Number(row.duration_minutes) : null,
+    sourceType: (row.source_type === 'real' || row.source_type === 'demo' || row.source_type === 'backtest' || row.source_type === 'unclassified') ? row.source_type : 'unclassified',
   };
 }
 
@@ -342,6 +344,7 @@ export function tradeToRow(trade: Trade, screenshotPath: string | null) {
     conflict_reasons: trade.conflictReasons ?? [],
     realized_net_return_pct: trade.realizedNetReturnPct ?? null,
     duration_minutes: trade.durationMinutes ?? null,
+    source_type: trade.sourceType ?? 'unclassified',
   };
 }
 

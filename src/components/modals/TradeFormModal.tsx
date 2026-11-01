@@ -7,6 +7,7 @@ import {
   TradeDirection,
   PsychologyTag,
   PDArray,
+  TradeSourceType,
 } from '@/types/trading';
 import {
   INSTRUMENT_SPECS,
@@ -195,6 +196,51 @@ function TradeFormModalContent({
             <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-400">
               Datos Principales
             </h4>
+
+            {/* Selector de Entorno: Real, Demo, Backtesting */}
+            <div>
+              <label className="block text-xs font-semibold text-zinc-300 mb-1.5">
+                Entorno de Ejecución
+              </label>
+              <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5">
+                {[
+                  { id: 'real', label: 'Real', desc: 'Capital en vivo' },
+                  { id: 'demo', label: 'Demo', desc: 'Simulación' },
+                  { id: 'backtest', label: 'Backtesting', desc: 'Histórico' },
+                ].map((item) => {
+                  const active = form.sourceType === item.id;
+                  return (
+                    <button
+                      type="button"
+                      key={item.id}
+                      onClick={() => setForm((prev) => ({ ...prev, sourceType: item.id as TradeSourceType }))}
+                      className={`px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer text-center border ${
+                        active
+                          ? 'bg-zinc-800 border-white/30 text-white shadow-sm'
+                          : 'bg-zinc-900/60 border-white/[0.06] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40'
+                      }`}
+                    >
+                      <div>{item.label}</div>
+                      <span className="text-[10px] text-zinc-500 font-normal block">{item.desc}</span>
+                    </button>
+                  );
+                })}
+                {editingTrade && (!editingTrade.sourceType || editingTrade.sourceType === 'unclassified') && (
+                  <button
+                    type="button"
+                    onClick={() => setForm((prev) => ({ ...prev, sourceType: 'unclassified' }))}
+                    className={`px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer text-center border ${
+                      form.sourceType === 'unclassified'
+                        ? 'bg-zinc-800 border-white/30 text-zinc-300 shadow-sm'
+                        : 'bg-zinc-900/60 border-white/[0.06] text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40'
+                    }`}
+                  >
+                    <div>Sin clasificar</div>
+                    <span className="text-[10px] text-zinc-500 font-normal block">Histórico</span>
+                  </button>
+                )}
+              </div>
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
               <div>

@@ -16,6 +16,7 @@ import {
   TradeFilters,
   DashboardMetrics,
   PersonalTradingRule,
+  TradeSourceType,
 } from '@/types/trading';
 import {
   DEFAULT_ACCOUNTS,
@@ -75,7 +76,8 @@ interface TradingContextValue {
   addPersonalRule: (text: string) => void;
   updatePersonalRule: (id: string, text: string) => void;
   deletePersonalRule: (id: string) => void;
-  importCSV: (csvText: string) => number;
+  importCSV: (csvText: string, defaultSourceType?: TradeSourceType) => number;
+  importBacktestCSV: (csvText: string) => number;
   exportBackup: () => void;
   importBackup: (jsonText: string) => boolean;
   clearAllTrades: () => void;
@@ -91,6 +93,7 @@ const DEFAULT_FILTERS: TradeFilters = {
   playbookId: 'All',
   dateFrom: '',
   dateTo: '',
+  sourceType: 'All',
 };
 
 import { resolveTargetAccount } from '@/services/account-service';
@@ -346,6 +349,10 @@ export function TradingProvider({
         ) {
           return false;
         }
+        if (filters.sourceType && filters.sourceType !== 'All') {
+          const sType = t.sourceType || 'unclassified';
+          if (sType !== filters.sourceType) return false;
+        }
         const tradeDay = t.entryDate.slice(0, 10);
         if (filters.dateFrom && tradeDay < filters.dateFrom) return false;
         if (filters.dateTo && tradeDay > filters.dateTo) return false;
@@ -436,19 +443,26 @@ export function TradingProvider({
   }, []);
 
   const importCSV = useCallback(
-    (csvText: string) => {
+    (csvText: string, defaultSourceType: TradeSourceType = 'unclassified') => {
       let targetAccountId = filters.accountId !== 'All' ? filters.accountId : accounts[0]?.id;
       if (!targetAccountId) {
         targetAccountId = TECHNICAL_FALLBACK_ACCOUNT.id;
         setAccounts((prev) => prev.some((a) => a.id === TECHNICAL_FALLBACK_ACCOUNT.id) ? prev : [TECHNICAL_FALLBACK_ACCOUNT, ...prev]);
       }
-      const parsed = parseTradingViewCSV(csvText, targetAccountId);
+      const parsed = parseTradingViewCSV(csvText, targetAccountId, defaultSourceType, trades);
       if (parsed.length > 0) {
         setTrades((prev) => [...parsed, ...prev]);
       }
       return parsed.length;
     },
-    [filters.accountId, accounts]
+    [filters.accountId, accounts, trades]
+  );
+
+  const importBacktestCSV = useCallback(
+    (csvText: string) => {
+      return importCSV(csvText, 'backtest');
+    },
+    [importCSV]
   );
 
   const exportBackup = useCallback(() => {
@@ -538,6 +552,7 @@ export function TradingProvider({
         addPlaybook,
         deletePlaybook,
         saveDailyNote,
+        importBacktestCSV,
         addPersonalRule,
         updatePersonalRule,
         deletePersonalRule,

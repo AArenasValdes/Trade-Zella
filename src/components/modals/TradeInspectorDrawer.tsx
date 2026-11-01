@@ -90,6 +90,23 @@ export function TradeInspectorDrawer({
                   <span className="text-xs font-extrabold px-2 py-0.5 rounded bg-white/[0.06] text-zinc-300 border border-white/[0.08]">
                     Grade: {trade.setupGrade || 'Sin evaluar'}
                   </span>
+                  <span className={`text-xs font-extrabold px-2 py-0.5 rounded border ${
+                    trade.sourceType === 'real'
+                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25'
+                      : trade.sourceType === 'backtest'
+                      ? 'bg-amber-500/10 text-amber-400 border-amber-500/25'
+                      : trade.sourceType === 'demo'
+                      ? 'bg-purple-500/10 text-purple-400 border-purple-500/25'
+                      : 'bg-zinc-800 text-zinc-400 border-white/10'
+                  }`}>
+                    {trade.sourceType === 'real'
+                      ? 'Real'
+                      : trade.sourceType === 'backtest'
+                      ? 'Backtesting'
+                      : trade.sourceType === 'demo'
+                      ? 'Demo'
+                      : 'Sin clasificar'}
+                  </span>
                 </div>
                 <h3 className="text-xl font-extrabold text-zinc-100 flex flex-wrap items-center gap-2 mt-1">
                   <span>{trade.symbol} ({trade.direction})</span>
