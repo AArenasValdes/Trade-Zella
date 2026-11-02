@@ -15,7 +15,7 @@ import {
   PSYCHOLOGY_TAGS,
 } from '../config/ict-constants.ts';
 import { detectKillzoneFromTime } from './math-engine.ts';
-import { generateTradeDeduplicationKey } from './storage-service.ts';
+import { detectTradeDataConflicts } from './financial-engine.ts';
 import { isValidDateKey } from './date-time-service.ts';
 
 export type CsvImportEnvironment = Exclude<TradeSourceType, 'unclassified'>;
@@ -44,6 +44,7 @@ export type CsvImportField =
   | 'durationMinutes'
   | 'timeframe'
   | 'sourceEnvironment'
+  | 'sourceId'
   | 'dolTarget';
 
 export interface CsvFormatDetection {
@@ -57,8 +58,11 @@ export interface CsvFormatDetection {
 
 export interface CsvImportRow {
   rowNumber: number;
-  status: 'ready' | 'duplicate' | 'rejected' | 'conflict';
+  status: 'ready' | 'duplicate' | 'possible-duplicate' | 'rejected' | 'conflict' | 'financial-conflict';
   reviewed: boolean;
+  environmentConflict?: boolean;
+  financialConflict?: boolean;
+  possibleDuplicate?: boolean;
   trade?: Trade;
   sourceEnvironment?: string;
   messages: string[];
@@ -71,8 +75,12 @@ export interface CsvImportPreview {
   validCount: number;
   rejectedCount: number;
   duplicateCount: number;
+  possibleDuplicateCount: number;
   conflictCount: number;
+  financialConflictCount: number;
   unreviewedConflictCount: number;
+  unreviewedFinancialConflictCount: number;
+  unreviewedPossibleDuplicateCount: number;
   warningCount: number;
   canImport: boolean;
   warnings: string[];
@@ -123,6 +131,7 @@ const FIELD_LABELS: Record<CsvImportField, string> = {
   durationMinutes: 'Duración (minutos)',
   timeframe: 'Temporalidad',
   sourceEnvironment: 'Entorno de origen',
+  sourceId: 'ID de origen',
   dolTarget: 'Objetivo DOL',
 };
 
@@ -150,6 +159,7 @@ const FIELD_ALIASES: ReadonlyArray<readonly [CsvImportField, readonly string[]]>
   ['durationMinutes', ['duration', 'duration minutes', 'minutes', 'duracion', 'duracion minutos', 'minutos']],
   ['timeframe', ['timeframe', 'time frame', 'temporalidad', 'marco temporal']],
   ['sourceEnvironment', ['source type', 'source environment', 'environment', 'environment type', 'entorno', 'entorno de origen', 'tipo de entorno', 'tipo de cuenta']],
+  ['sourceId', ['id', 'trade id', 'tradingview id', 'order id', 'position id', 'execution id', 'uuid', 'id de operacion', 'id de operación']],
   ['dolTarget', ['dol', 'target', 'draw on liquidity', 'objetivo dol']],
 ];
 
@@ -469,13 +479,19 @@ function parseTimeframe(rawValue: string): Timeframe | null {
   return TIMEFRAMES.find((value) => value.toLowerCase() === rawValue.trim().toLowerCase()) ?? null;
 }
 
-function deterministicId(key: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < key.length; index += 1) {
-    hash ^= key.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `csv-${(hash >>> 0).toString(16)}`;
+function deterministicId(key: string, uuidVersion: '4' | '5'): string {
+  const seeds = [2166136261, 2246822519, 3266489917, 668265263];
+  const hashParts = seeds.map((seed, seedIndex) => {
+    let hash = seed;
+    const input = `${seedIndex}\u0000${key}`;
+    for (let index = 0; index < input.length; index += 1) {
+      hash ^= input.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+  }).join('');
+  const hex = `${hashParts.slice(0, 12)}${uuidVersion}${hashParts.slice(13, 16)}${((Number.parseInt(hashParts[16], 16) & 0x3) | 0x8).toString(16)}${hashParts.slice(17, 32)}`;
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
 function appendNotes(notes: string, entries: string[]): string {
@@ -489,7 +505,7 @@ function createTrade(
   mappings: Record<string, CsvImportField | ''>,
   environment: CsvImportEnvironment,
   accountId: string
-): { trade: Trade | null; messages: string[]; sourceEnvironment?: string; environmentConflict?: boolean } {
+): { trade: Trade | null; messages: string[]; sourceEnvironment?: string; environmentConflict?: boolean; financialConflict?: boolean } {
   const messages: string[] = [];
   const rawDate = valueForField(record, headers, mappings, 'entryDate');
   const date = parseDate(rawDate);
@@ -516,6 +532,9 @@ function createTrade(
     (returnPct !== null && returnPct !== 0 ? (returnPct > 0 ? 'Win' : 'Loss') : null);
 
   if (!date) messages.push(rawDate ? 'Fecha inválida o ambigua; corrige el formato antes de importar.' : 'Falta la fecha de la operación.');
+  if (date && !date.hasTime) {
+    messages.push('La fecha no incluye hora. No se importa porque Supabase exige timestamp y al recargar podría aparecer como 00:00 NY con precisión exacta.');
+  }
   if (!symbol) messages.push('Falta el instrumento; no se asigna NAS100 por defecto.');
   if (!direction) messages.push('Falta una dirección Long/Short reconocible; no se asigna una dirección por defecto.');
   if (!inferredResultStatus) messages.push('Falta un resultado verificable (R, P&L, retorno o TP/SL).');
@@ -531,7 +550,7 @@ function createTrade(
   if (rawSource && !parsedSource) messages.push(`Entorno de origen no reconocido: ${rawSource}. Revisa esta fila antes de asignarla a ${environment}.`);
   else if (parsedSource && parsedSource !== environment) messages.push(`Conflicto de entorno: CSV indica ${parsedSource}; selector indica ${environment}.`);
 
-  if (!date || !symbol || !direction || !inferredResultStatus) {
+  if (!date || !date.hasTime || !symbol || !direction || !inferredResultStatus) {
     return { trade: null, messages, sourceEnvironment };
   }
 
@@ -559,13 +578,8 @@ function createTrade(
 
   if (date.warning) messages.push(date.warning);
   if (date.explicitTimezone) preservationNotes.push(`Fecha/hora original CSV (zona explícita, hora conservada): ${rawDate}`);
-  if (!date.hasTime && !explicitKillzone) {
-    messages.push('Falta hora y killzone; no se puede asignar una ventana operativa sin inventarla. Mapea una killzone para esta fila.');
-    return { trade: null, messages, sourceEnvironment };
-  }
-
   const killzone: Killzone = explicitKillzone ?? detectKillzoneFromTime(date.entryDate);
-  if (date.hasTime && !explicitKillzone) {
+  if (!explicitKillzone) {
     messages.push('Killzone inferida con la hora escrita en el CSV como hora de Nueva York; no se aplicó conversión horaria.');
   }
   if (rawKillzone && !explicitKillzone) {
@@ -587,6 +601,9 @@ function createTrade(
   if (!rawTimeframe) {
     preservationNotes.push('Temporalidad ausente en CSV; se asignó 15m solo por requisito técnico y no como dato registrado.');
   }
+
+  const sourceId = valueForField(record, headers, mappings, 'sourceId').trim();
+  if (sourceId) preservationNotes.push(`ID de origen CSV: ${sourceId}`);
 
   const mappedHeaders = new Set(Object.entries(mappings).filter(([, field]) => field !== '').map(([header]) => header));
   for (let index = 0; index < headers.length; index += 1) {
@@ -611,17 +628,24 @@ function createTrade(
   const netPnlValue = explicitNetPnl ?? 0;
   const grossPnlValue = grossPnl ?? 0;
   const rMultiple = explicitR ?? 0;
-  const baseDateKey = date.entryDate;
-  const deduplicationKey = generateTradeDeduplicationKey({
-    entryDate: baseDateKey,
-    symbol,
-    direction,
-    entryPrice: entryPriceValue,
-    exitPrice: exitPriceValue,
-    sourceType: environment,
+  const sourceRecordKey = sourceId
+    ? `${environment}\u0000source-id\u0000${sourceId}`
+    : `${environment}\u0000row\u0000${record.rowNumber}\u0000${JSON.stringify(record.values)}`;
+  const calculationMode = explicitNetPnl !== null || grossPnl !== null ? 'monetary' : 'unrecorded';
+  const pnlProvenance = explicitNetPnl !== null ? 'audited' : grossPnl !== null ? 'audited' : 'unrecorded';
+  const financialConflictReasons = detectTradeDataConflicts({
+    status: inferredResultStatus,
+    rMultiple,
+    rUnrecorded: explicitR === null,
+    netPnl: netPnlValue,
+    calculationMode,
+    realizedNetReturnPct: returnPct,
   });
+  if (financialConflictReasons.length > 0) {
+    messages.push(`Contradicción financiera: ${financialConflictReasons.join('; ')}. Si se importa tras revisarla, quedará excluida de estadísticas, Monte Carlo y Analista IA.`);
+  }
   const trade: Trade = {
-    id: deterministicId(deduplicationKey),
+    id: deterministicId(sourceRecordKey, sourceId ? '5' : '4'),
     symbol,
     direction,
     entryDate: date.entryDate,
@@ -653,14 +677,46 @@ function createTrade(
     notes: appendNotes(baseNotes, preservationNotes),
     accountId,
     timePrecision: date.hasTime ? 'exact' : undefined,
-    calculationMode: explicitNetPnl !== null || grossPnl !== null ? 'monetary' : 'unrecorded',
-    pnlProvenance: explicitNetPnl !== null ? 'audited' : grossPnl !== null ? 'audited' : 'unrecorded',
+    calculationMode,
+    pnlProvenance,
     pricesUnrecorded: entryPrice === null || exitPrice === null,
     realizedNetReturnPct: returnPct,
     durationMinutes: Number.isInteger(duration) ? duration : null,
     sourceType: environment,
+    hasDataConflict: financialConflictReasons.length > 0,
+    conflictReasons: financialConflictReasons,
   };
-  return { trade, messages, sourceEnvironment, ...(isEnvironmentConflict ? { environmentConflict: true } : {}) };
+  return {
+    trade,
+    messages,
+    sourceEnvironment,
+    ...(isEnvironmentConflict ? { environmentConflict: true } : {}),
+    ...(financialConflictReasons.length > 0 ? { financialConflict: true } : {}),
+  };
+}
+
+function tradeIdentityFingerprint(trade: Trade): string | null {
+  if (trade.pricesUnrecorded || !trade.entryDate.includes('T')) return null;
+  return JSON.stringify([
+    trade.entryDate.slice(0, 16), trade.symbol.trim().toUpperCase(), trade.direction,
+    trade.sourceType ?? 'unclassified', trade.accountId, trade.timePrecision ?? 'exact',
+    trade.entryPrice, trade.exitPrice,
+    trade.stopLoss, trade.takeProfit, trade.size, trade.commission,
+    trade.grossPnl, trade.netPnl, trade.calculationMode, trade.rMultiple,
+    trade.rUnrecorded, trade.realizedNetReturnPct ?? null, trade.status,
+    trade.killzone, [...trade.pdArrays].sort(), trade.psychologyTag, trade.notes ?? '',
+  ]);
+}
+
+function weakTradeAnchor(trade: Trade): string {
+  return JSON.stringify([
+    trade.entryDate.slice(0, 10), trade.symbol.trim().toUpperCase(),
+    trade.direction, trade.sourceType ?? 'unclassified', trade.accountId,
+  ]);
+}
+
+export function hasStableCsvSourceIdentity(trade: Pick<Trade, 'id'>): boolean {
+  return trade.id[14]?.toLowerCase() === '5';
 }
 
 export function buildCsvImportPreview(input: {
@@ -670,11 +726,20 @@ export function buildCsvImportPreview(input: {
   mappings: Record<string, CsvImportField | ''>;
   existingTrades: readonly Trade[];
   reviewedConflictRows?: readonly number[];
+  reviewedFinancialConflictRows?: readonly number[];
+  reviewedPossibleDuplicateRows?: readonly number[];
 }): CsvImportPreview {
   const parsed = parseDocument(input.csvText);
   const format = detectFormat(parsed.headers);
-  const reviewedRows = new Set(input.reviewedConflictRows ?? []);
-  const seenKeys = new Set(input.existingTrades.map((trade) => generateTradeDeduplicationKey(trade)));
+  const reviewedEnvironmentRows = new Set(input.reviewedConflictRows ?? []);
+  const reviewedFinancialRows = new Set(input.reviewedFinancialConflictRows ?? []);
+  const reviewedPossibleDuplicateRows = new Set(input.reviewedPossibleDuplicateRows ?? []);
+  const seenIds = new Set(input.existingTrades.map((trade) => trade.id));
+  const seenFingerprints = new Set(input.existingTrades.flatMap((trade) => {
+    const fingerprint = tradeIdentityFingerprint(trade);
+    return fingerprint ? [fingerprint] : [];
+  }));
+  const seenWeakAnchors = new Set(input.existingTrades.map(weakTradeAnchor));
   const rows: CsvImportRow[] = parsed.records.map((record) => {
     if (record.values.length !== parsed.headers.length) {
       return {
@@ -685,8 +750,6 @@ export function buildCsvImportPreview(input: {
       };
     }
     const created = createTrade(record, parsed.headers, input.mappings, input.environment, input.accountId);
-    const conflict = Boolean(created.environmentConflict);
-    const reviewed = conflict && reviewedRows.has(record.rowNumber);
     if (!created.trade) {
       return {
         rowNumber: record.rowNumber,
@@ -696,49 +759,76 @@ export function buildCsvImportPreview(input: {
         messages: created.messages,
       };
     }
-    const key = generateTradeDeduplicationKey(created.trade);
-    if (seenKeys.has(key)) {
+
+    const fingerprint = tradeIdentityFingerprint(created.trade);
+    if ((hasStableCsvSourceIdentity(created.trade) && seenIds.has(created.trade.id)) || Boolean(fingerprint && seenFingerprints.has(fingerprint))) {
       return {
         rowNumber: record.rowNumber,
         status: 'duplicate',
         reviewed: false,
         trade: created.trade,
         sourceEnvironment: created.sourceEnvironment,
-        messages: [...created.messages, 'Operación duplicada dentro del archivo o en el historial; se preserva la existente.'],
+        messages: [...created.messages, 'Duplicado confirmado por ID estable o por huella completa de operación; se conserva la existente.'],
       };
     }
-    seenKeys.add(key);
+
+    const possibleDuplicate = fingerprint === null && seenWeakAnchors.has(weakTradeAnchor(created.trade));
+    const environmentConflict = Boolean(created.environmentConflict);
+    const financialConflict = Boolean(created.financialConflict);
+    const environmentReviewed = !environmentConflict || reviewedEnvironmentRows.has(record.rowNumber);
+    const financialReviewed = !financialConflict || reviewedFinancialRows.has(record.rowNumber);
+    const possibleDuplicateReviewed = !possibleDuplicate || reviewedPossibleDuplicateRows.has(record.rowNumber);
+    const reviewed = environmentReviewed && financialReviewed && possibleDuplicateReviewed;
+    seenIds.add(created.trade.id);
+    if (fingerprint) seenFingerprints.add(fingerprint);
+    seenWeakAnchors.add(weakTradeAnchor(created.trade));
+
+    if (possibleDuplicate) {
+      created.messages.push('Posible duplicado: faltan datos de identidad suficientes. No se descartará sin tu revisión.');
+    }
     return {
       rowNumber: record.rowNumber,
-      status: conflict ? 'conflict' : 'ready',
+      status: financialConflict ? 'financial-conflict'
+        : environmentConflict ? 'conflict'
+        : possibleDuplicate ? 'possible-duplicate'
+        : 'ready',
       reviewed,
+      environmentConflict,
+      financialConflict,
+      possibleDuplicate,
       trade: created.trade,
       sourceEnvironment: created.sourceEnvironment,
       messages: created.messages,
     };
   });
 
-  const validCount = rows.filter((row) => row.status === 'ready' || (row.status === 'conflict' && row.reviewed)).length;
+  const validRows = rows.filter((row) => row.status !== 'rejected' && row.status !== 'duplicate' && row.reviewed);
   const rejectedCount = rows.filter((row) => row.status === 'rejected').length;
   const duplicateCount = rows.filter((row) => row.status === 'duplicate').length;
-  const conflictCount = rows.filter((row) => row.status === 'conflict').length;
-  const unreviewedConflictCount = rows.filter((row) => row.status === 'conflict' && !row.reviewed).length;
+  const possibleDuplicateCount = rows.filter((row) => row.possibleDuplicate).length;
+  const conflictCount = rows.filter((row) => row.environmentConflict).length;
+  const financialConflictCount = rows.filter((row) => row.financialConflict).length;
+  const unreviewedConflictCount = rows.filter((row) => row.environmentConflict && !reviewedEnvironmentRows.has(row.rowNumber)).length;
+  const unreviewedFinancialConflictCount = rows.filter((row) => row.financialConflict && !reviewedFinancialRows.has(row.rowNumber)).length;
+  const unreviewedPossibleDuplicateCount = rows.filter((row) => row.possibleDuplicate && !reviewedPossibleDuplicateRows.has(row.rowNumber)).length;
   const warnings = [...parsed.warnings, ...rows.flatMap((row) => row.messages)];
-  const tradesToImport = rows
-    .filter((row) => row.status === 'ready' || (row.status === 'conflict' && row.reviewed))
-    .flatMap((row) => row.trade ? [row.trade] : []);
+  const tradesToImport = validRows.flatMap((row) => row.trade ? [row.trade] : []);
 
   return {
     format,
     headers: parsed.headers,
     rowCount: parsed.records.length,
-    validCount,
+    validCount: validRows.length,
     rejectedCount,
     duplicateCount,
+    possibleDuplicateCount,
     conflictCount,
+    financialConflictCount,
     unreviewedConflictCount,
+    unreviewedFinancialConflictCount,
+    unreviewedPossibleDuplicateCount,
     warningCount: warnings.length,
-    canImport: validCount > 0 && unreviewedConflictCount === 0,
+    canImport: validRows.length > 0 && unreviewedConflictCount === 0 && unreviewedFinancialConflictCount === 0 && unreviewedPossibleDuplicateCount === 0,
     warnings,
     rows,
     tradesToImport,
@@ -746,12 +836,17 @@ export function buildCsvImportPreview(input: {
 }
 
 export function mergeCsvTrades(existingTrades: readonly Trade[], importedTrades: readonly Trade[]): Trade[] {
-  const seenKeys = new Set(existingTrades.map((trade) => generateTradeDeduplicationKey(trade)));
+  const seenIds = new Set(existingTrades.map((trade) => trade.id));
+  const seenFingerprints = new Set(existingTrades.flatMap((trade) => {
+    const fingerprint = tradeIdentityFingerprint(trade);
+    return fingerprint ? [fingerprint] : [];
+  }));
   const additions: Trade[] = [];
   for (const trade of importedTrades) {
-    const key = generateTradeDeduplicationKey(trade);
-    if (seenKeys.has(key)) continue;
-    seenKeys.add(key);
+    const fingerprint = tradeIdentityFingerprint(trade);
+    if ((hasStableCsvSourceIdentity(trade) && seenIds.has(trade.id)) || Boolean(fingerprint && seenFingerprints.has(fingerprint))) continue;
+    seenIds.add(trade.id);
+    if (fingerprint) seenFingerprints.add(fingerprint);
     additions.push(trade);
   }
   return additions.length > 0 ? [...additions, ...existingTrades] : [...existingTrades];

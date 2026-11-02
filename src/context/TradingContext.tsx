@@ -42,7 +42,7 @@ import {
   validateBackupPayload,
   BackupPayload,
 } from '@/services/storage-service';
-import { mergeCsvTrades } from '@/services/csv-import-service';
+import { hasStableCsvSourceIdentity, mergeCsvTrades } from '@/services/csv-import-service';
 
 interface TradingContextValue {
   trades: Trade[];
@@ -469,8 +469,11 @@ export function TradingProvider({
 
   const importPreparedCsvTrades = useCallback((importedTrades: readonly Trade[]) => {
     if (importedTrades.length === 0) return 0;
-    setTrades((previous) => mergeCsvTrades(previous, importedTrades));
-    if (importedTrades.some((trade) => trade.accountId === TECHNICAL_FALLBACK_ACCOUNT.id)) {
+    const tradesWithPersistentIds = importedTrades.map((trade) => hasStableCsvSourceIdentity(trade)
+      ? trade
+      : { ...trade, id: crypto.randomUUID() });
+    setTrades((previous) => mergeCsvTrades(previous, tradesWithPersistentIds));
+    if (tradesWithPersistentIds.some((trade) => trade.accountId === TECHNICAL_FALLBACK_ACCOUNT.id)) {
       setAccounts((previous) => previous.some((account) => account.id === TECHNICAL_FALLBACK_ACCOUNT.id)
         ? previous
         : [TECHNICAL_FALLBACK_ACCOUNT, ...previous]);

@@ -35,7 +35,9 @@ export function CsvImportModal({ onClose }: CsvImportModalProps) {
   const [fileName, setFileName] = useState('');
   const [environment, setEnvironment] = useState<CsvImportEnvironment | ''>('');
   const [mappings, setMappings] = useState<Record<string, CsvImportField | ''>>({});
-  const [reviewedRows, setReviewedRows] = useState<number[]>([]);
+  const [reviewedEnvironmentRows, setReviewedEnvironmentRows] = useState<number[]>([]);
+  const [reviewedFinancialRows, setReviewedFinancialRows] = useState<number[]>([]);
+  const [reviewedPossibleDuplicateRows, setReviewedPossibleDuplicateRows] = useState<number[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const [fileError, setFileError] = useState('');
   const [savedCount, setSavedCount] = useState<number | null>(null);
@@ -60,7 +62,9 @@ export function CsvImportModal({ onClose }: CsvImportModalProps) {
           accountId,
           mappings,
           existingTrades: trades,
-          reviewedConflictRows: reviewedRows,
+          reviewedConflictRows: reviewedEnvironmentRows,
+          reviewedFinancialConflictRows: reviewedFinancialRows,
+          reviewedPossibleDuplicateRows,
         }),
         error: null,
       };
@@ -70,7 +74,7 @@ export function CsvImportModal({ onClose }: CsvImportModalProps) {
         error: error instanceof Error ? error.message : 'No se pudo leer el CSV.',
       };
     }
-  }, [accountId, csvText, environment, mappings, reviewedRows, trades]);
+  }, [accountId, csvText, environment, mappings, reviewedEnvironmentRows, reviewedFinancialRows, reviewedPossibleDuplicateRows, trades]);
 
   const handleFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -80,7 +84,9 @@ export function CsvImportModal({ onClose }: CsvImportModalProps) {
     setCsvText('');
     setFileName(file.name);
     setMappings({});
-    setReviewedRows([]);
+    setReviewedEnvironmentRows([]);
+    setReviewedFinancialRows([]);
+    setReviewedPossibleDuplicateRows([]);
     try {
       const text = await file.text();
       if (!text.trim()) {
@@ -98,13 +104,19 @@ export function CsvImportModal({ onClose }: CsvImportModalProps) {
   const preview = previewState?.preview ?? null;
   const labels = getCsvImportFieldLabels();
 
+  const clearRowReviews = () => {
+    setReviewedEnvironmentRows([]);
+    setReviewedFinancialRows([]);
+    setReviewedPossibleDuplicateRows([]);
+  };
+
   const handleSave = () => {
     if (!preview?.canImport || savedCount !== null) return;
     setSavedCount(importPreparedCsvTrades(preview.tradesToImport));
   };
 
-  const toggleReviewedRow = (rowNumber: number) => {
-    setReviewedRows((previous) => previous.includes(rowNumber)
+  const toggleReviewedRow = (rowNumber: number, setter: React.Dispatch<React.SetStateAction<number[]>>) => {
+    setter((previous) => previous.includes(rowNumber)
       ? previous.filter((value) => value !== rowNumber)
       : [...previous, rowNumber]);
   };
@@ -139,7 +151,10 @@ export function CsvImportModal({ onClose }: CsvImportModalProps) {
                   Entorno de estas operaciones <span className="text-rose-300">(obligatorio)</span>
                   <select
                     value={environment}
-                    onChange={(event) => setEnvironment(event.target.value as CsvImportEnvironment | '')}
+                    onChange={(event) => {
+                      setEnvironment(event.target.value as CsvImportEnvironment | '');
+                      clearRowReviews();
+                    }}
                     className="w-full rounded-lg border border-white/10 bg-[#09090B] px-3 py-2.5 text-sm text-zinc-100"
                   >
                     <option value="">Selecciona el entorno</option>
@@ -191,7 +206,10 @@ export function CsvImportModal({ onClose }: CsvImportModalProps) {
                               <select
                                 aria-label={`Mapear columna ${header}`}
                                 value={mappings[header] ?? ''}
-                                onChange={(event) => setMappings((previous) => ({ ...previous, [header]: event.target.value as CsvImportField | '' }))}
+                                onChange={(event) => {
+                                  setMappings((previous) => ({ ...previous, [header]: event.target.value as CsvImportField | '' }));
+                                  clearRowReviews();
+                                }}
                                 className="w-full rounded-md border border-white/10 bg-[#09090B] px-2 py-1.5 text-zinc-100"
                               >
                                 <option value="">Sin mapear</option>
@@ -210,11 +228,13 @@ export function CsvImportModal({ onClose }: CsvImportModalProps) {
 
               {preview && (
                 <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
                     <Count label="Válidos" value={preview.validCount} tone="text-emerald-300" />
                     <Count label="Rechazados" value={preview.rejectedCount} tone="text-rose-300" />
-                    <Count label="Duplicados" value={preview.duplicateCount} tone="text-zinc-300" />
-                    <Count label="Conflictos" value={preview.conflictCount} tone="text-amber-200" />
+                    <Count label="Duplicados exactos" value={preview.duplicateCount} tone="text-zinc-300" />
+                    <Count label="Posibles duplicados" value={preview.possibleDuplicateCount} tone="text-amber-200" />
+                    <Count label="Conflictos entorno" value={preview.conflictCount} tone="text-amber-200" />
+                    <Count label="Conflictos financieros" value={preview.financialConflictCount} tone="text-rose-200" />
                   </div>
 
                   {preview.warnings.length > 0 && (
@@ -230,15 +250,14 @@ export function CsvImportModal({ onClose }: CsvImportModalProps) {
                     {preview.rows.map((row) => (
                       <div key={row.rowNumber} className="rounded-lg border border-white/[0.07] bg-black/20 p-3 text-xs">
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span className="font-semibold text-zinc-200">Fila {row.rowNumber} · {row.status === 'ready' ? 'Lista' : row.status === 'duplicate' ? 'Duplicada' : row.status === 'conflict' ? 'Conflicto de entorno' : 'Rechazada'}</span>
-                          {row.status === 'conflict' && (
-                            <label className="flex items-center gap-2 text-amber-200">
-                              <input type="checkbox" checked={row.reviewed} onChange={() => toggleReviewedRow(row.rowNumber)} />
-                              Revisé: importar como {environment ? ENVIRONMENT_LABELS[environment] : 'entorno seleccionado'}
-                            </label>
-                          )}
+                          <span className="font-semibold text-zinc-200">Fila {row.rowNumber} · {row.status === 'ready' ? 'Lista' : row.status === 'duplicate' ? 'Duplicado confirmado' : row.status === 'possible-duplicate' ? 'Posible duplicado' : row.status === 'financial-conflict' ? 'Contradicción financiera' : row.status === 'conflict' ? 'Conflicto de entorno' : 'Rechazada'}</span>
                         </div>
                         <p className="mt-1 text-zinc-400">{row.messages.join(' ') || '—'}</p>
+                        <div className="mt-2 flex flex-col gap-2">
+                          {row.environmentConflict && <label className="flex items-center gap-2 text-amber-200"><input type="checkbox" checked={reviewedEnvironmentRows.includes(row.rowNumber)} onChange={() => toggleReviewedRow(row.rowNumber, setReviewedEnvironmentRows)} />Revisé el entorno de origen; importar como {environment ? ENVIRONMENT_LABELS[environment] : 'entorno seleccionado'}</label>}
+                          {row.financialConflict && <label className="flex items-center gap-2 text-rose-200"><input type="checkbox" checked={reviewedFinancialRows.includes(row.rowNumber)} onChange={() => toggleReviewedRow(row.rowNumber, setReviewedFinancialRows)} />Importar marcada como contradictoria y excluida de métricas</label>}
+                          {row.possibleDuplicate && <label className="flex items-center gap-2 text-amber-200"><input type="checkbox" checked={reviewedPossibleDuplicateRows.includes(row.rowNumber)} onChange={() => toggleReviewedRow(row.rowNumber, setReviewedPossibleDuplicateRows)} />Confirmo que es una operación distinta y deseo conservarla</label>}
+                        </div>
                       </div>
                     ))}
                     {preview.rows.length === 0 && <p className="text-xs text-zinc-500">El CSV no contiene filas de datos.</p>}
