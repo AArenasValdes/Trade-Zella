@@ -628,9 +628,9 @@ function createTrade(
   const netPnlValue = explicitNetPnl ?? 0;
   const grossPnlValue = grossPnl ?? 0;
   const rMultiple = explicitR ?? 0;
-  const sourceRecordKey = sourceId
-    ? `${environment}\u0000source-id\u0000${sourceId}`
-    : `${environment}\u0000row\u0000${record.rowNumber}\u0000${JSON.stringify(record.values)}`;
+  const sourceRecordKey = `${environment}\u0000account-id\u0000${accountId}\u0000${sourceId
+    ? `source-id\u0000${sourceId}`
+    : `row\u0000${record.rowNumber}\u0000${JSON.stringify(record.values)}`}`;
   const calculationMode = explicitNetPnl !== null || grossPnl !== null ? 'monetary' : 'unrecorded';
   const pnlProvenance = explicitNetPnl !== null ? 'audited' : grossPnl !== null ? 'audited' : 'unrecorded';
   const financialConflictReasons = detectTradeDataConflicts({

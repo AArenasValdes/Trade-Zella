@@ -26,7 +26,7 @@ function preview(csvText, environment, options = {}) {
   return buildCsvImportPreview({
     csvText,
     environment,
-    accountId,
+    accountId: options.accountId ?? accountId,
     mappings: { ...suggestCsvColumnMappings(detection.headers), ...options.mappings },
     existingTrades: options.existingTrades ?? [],
     reviewedConflictRows: options.reviewedConflictRows ?? [],
@@ -108,6 +108,41 @@ test('Cuenta duplicados internos y contra historial existente sin reemplazar ope
   assert.equal(withExisting.validCount, 0);
   assert.equal(withExisting.duplicateCount, 2);
   assert.equal(withExisting.tradesToImport.length, 0);
+});
+
+test('El ID de origen se delimita por cuenta y persiste con el account_id correcto en Supabase', () => {
+  const csvText = fixture('duplicates.csv');
+  const firstAccountId = '1f0d4af2-65e2-4b20-9cd0-a22e517f2b7b';
+  const secondAccountId = '6bd95dd3-d233-4cb5-a123-9b6f3d0d98c1';
+  const firstAccount = preview(csvText, 'real', { accountId: firstAccountId });
+  const secondAccount = preview(csvText, 'real', { accountId: secondAccountId });
+
+  assert.equal(firstAccount.validCount, 1);
+  assert.equal(secondAccount.validCount, 1);
+  assert.equal(firstAccount.duplicateCount, 1);
+  assert.equal(secondAccount.duplicateCount, 1);
+  assert.notEqual(firstAccount.tradesToImport[0].id, secondAccount.tradesToImport[0].id);
+
+  const row = tradeToRow(firstAccount.tradesToImport[0], null);
+  const reloaded = mapTrade(row);
+  assert.match(row.id, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  assert.equal(row.account_id, firstAccountId);
+  assert.equal(reloaded.id, firstAccount.tradesToImport[0].id);
+  assert.equal(reloaded.accountId, firstAccountId);
+});
+
+test('Reimportar el mismo ID de origen en la misma cuenta no agrega otra operación', () => {
+  const original = preview(fixture('duplicates.csv'), 'real', { accountId });
+  const reimport = preview(fixture('duplicates.csv'), 'real', {
+    accountId,
+    existingTrades: original.tradesToImport,
+  });
+
+  assert.equal(original.validCount, 1);
+  assert.equal(reimport.duplicateCount, 2);
+  assert.equal(reimport.validCount, 0);
+  assert.equal(reimport.tradesToImport.length, 0);
+  assert.equal(mergeCsvTrades(original.tradesToImport, reimport.tradesToImport).length, 1);
 });
 
 test('Detecta semicolon, coma decimal, comillas multilínea y conserva hora con zona sin desplazarla', () => {
