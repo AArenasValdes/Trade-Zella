@@ -11,6 +11,7 @@ import { AnalyticsView } from '@/components/views/AnalyticsView';
 import { PlaybooksView } from '@/components/views/PlaybooksView';
 import { TradeFormModal } from '@/components/modals/TradeFormModal';
 import { TradeInspectorDrawer } from '@/components/modals/TradeInspectorDrawer';
+import { CsvImportModal } from '@/components/modals/CsvImportModal';
 import type { Trade } from '@/types/trading';
 
 const PREVIEW_USER_ID = 'martin-local-showcase';
@@ -20,6 +21,7 @@ function PreviewWorkspace() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [isTradeModalOpen, setIsTradeModalOpen] = useState(false);
+  const [isCsvImportOpen, setIsCsvImportOpen] = useState(false);
   const [editingTrade, setEditingTrade] = useState<Trade | null>(null);
   const [inspectedTrade, setInspectedTrade] = useState<Trade | null>(null);
   const [newTradeEntryDate, setNewTradeEntryDate] = useState('');
@@ -47,6 +49,7 @@ function PreviewWorkspace() {
           setActiveTab={setActiveTab}
           isMobileOpen={isMobileNavOpen}
           onCloseMobile={() => setIsMobileNavOpen(false)}
+          onOpenCsvImport={() => setIsCsvImportOpen(true)}
         />
 
         <main className="min-w-0 flex-1">
@@ -92,6 +95,7 @@ function PreviewWorkspace() {
             {activeTab === 'analytics' && (
               <AnalyticsView
                 onInspectTrade={setInspectedTrade}
+                onOpenCsvImport={() => setIsCsvImportOpen(true)}
               />
             )}
             {activeTab === 'playbooks' && <PlaybooksView />}
@@ -110,6 +114,7 @@ function PreviewWorkspace() {
           onClose={() => setInspectedTrade(null)}
           onEdit={handleEditTrade}
         />
+        {isCsvImportOpen && <CsvImportModal onClose={() => setIsCsvImportOpen(false)} />}
       </div>
     </div>
   );

@@ -42,6 +42,7 @@ import {
   validateBackupPayload,
   BackupPayload,
 } from '@/services/storage-service';
+import { mergeCsvTrades } from '@/services/csv-import-service';
 
 interface TradingContextValue {
   trades: Trade[];
@@ -78,6 +79,7 @@ interface TradingContextValue {
   deletePersonalRule: (id: string) => void;
   importCSV: (csvText: string, defaultSourceType?: TradeSourceType) => number;
   importBacktestCSV: (csvText: string) => number;
+  importPreparedCsvTrades: (importedTrades: readonly Trade[]) => number;
   exportBackup: () => void;
   importBackup: (jsonText: string) => boolean;
   clearAllTrades: () => void;
@@ -465,6 +467,17 @@ export function TradingProvider({
     [importCSV]
   );
 
+  const importPreparedCsvTrades = useCallback((importedTrades: readonly Trade[]) => {
+    if (importedTrades.length === 0) return 0;
+    setTrades((previous) => mergeCsvTrades(previous, importedTrades));
+    if (importedTrades.some((trade) => trade.accountId === TECHNICAL_FALLBACK_ACCOUNT.id)) {
+      setAccounts((previous) => previous.some((account) => account.id === TECHNICAL_FALLBACK_ACCOUNT.id)
+        ? previous
+        : [TECHNICAL_FALLBACK_ACCOUNT, ...previous]);
+    }
+    return importedTrades.length;
+  }, []);
+
   const exportBackup = useCallback(() => {
     const payload: BackupPayload = {
       version: '3.0',
@@ -553,6 +566,7 @@ export function TradingProvider({
         deletePlaybook,
         saveDailyNote,
         importBacktestCSV,
+        importPreparedCsvTrades,
         addPersonalRule,
         updatePersonalRule,
         deletePersonalRule,

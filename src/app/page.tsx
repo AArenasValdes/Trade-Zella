@@ -14,6 +14,7 @@ import { AiAnalystView } from '@/components/views/AiAnalystView';
 import { PlaybooksView } from '@/components/views/PlaybooksView';
 import { TradeFormModal } from '@/components/modals/TradeFormModal';
 import { TradeInspectorDrawer } from '@/components/modals/TradeInspectorDrawer';
+import { CsvImportModal } from '@/components/modals/CsvImportModal';
 import type { Trade } from '@/types/trading';
 import { WelcomeExperience } from '@/components/views/WelcomeExperience';
 import { SupabaseAuthGate, signOutFromSupabase } from '@/components/auth/SupabaseAuthGate';
@@ -31,6 +32,7 @@ function TradingWorkspace({ user }: { user: User }) {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [isTradeModalOpen, setIsTradeModalOpen] = useState(false);
+  const [isCsvImportOpen, setIsCsvImportOpen] = useState(false);
   const [editingTrade, setEditingTrade] = useState<Trade | null>(null);
   const [inspectedTrade, setInspectedTrade] = useState<Trade | null>(null);
   const [newTradeEntryDate, setNewTradeEntryDate] = useState('');
@@ -87,6 +89,7 @@ function TradingWorkspace({ user }: { user: User }) {
           setActiveTab={setActiveTab}
           isMobileOpen={isMobileNavOpen}
           onCloseMobile={() => setIsMobileNavOpen(false)}
+          onOpenCsvImport={() => setIsCsvImportOpen(true)}
           onShowDedication={isMartin ? handleReplayIntro : undefined}
         />
 
@@ -119,6 +122,7 @@ function TradingWorkspace({ user }: { user: User }) {
             {activeTab === 'analytics' && (
               <AnalyticsView
                 onInspectTrade={setInspectedTrade}
+                onOpenCsvImport={() => setIsCsvImportOpen(true)}
               />
             )}
 
@@ -143,6 +147,8 @@ function TradingWorkspace({ user }: { user: User }) {
           onClose={() => setInspectedTrade(null)}
           onEdit={handleEditTrade}
         />
+
+        {isCsvImportOpen && <CsvImportModal onClose={() => setIsCsvImportOpen(false)} />}
       </div>
       {!introPreferenceReady && (
         <div aria-hidden="true" className="fixed inset-0 z-50 bg-[#09090B]" />

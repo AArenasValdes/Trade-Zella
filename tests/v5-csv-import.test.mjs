@@ -1,0 +1,221 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import {
+  buildCsvImportPreview,
+  detectCsvFormat,
+  suggestCsvColumnMappings,
+} from '../src/services/csv-import-service.ts';
+import {
+  calculateBacktestVsRealComparison,
+} from '../src/services/edge-analytics-service.ts';
+import { buildAnalystGroundingContext } from '../src/services/ai-analyst-service.ts';
+import { validateBackupPayload } from '../src/services/storage-service.ts';
+
+const fixtureDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'csv');
+const fixture = (name) => readFileSync(path.join(fixtureDirectory, name), 'utf8');
+const accountId = 'account-csv-test';
+
+function preview(csvText, environment, options = {}) {
+  const detection = detectCsvFormat(csvText);
+  return buildCsvImportPreview({
+    csvText,
+    environment,
+    accountId,
+    mappings: { ...suggestCsvColumnMappings(detection.headers), ...options.mappings },
+    existingTrades: options.existingTrades ?? [],
+    reviewedConflictRows: options.reviewedConflictRows ?? [],
+  });
+}
+
+test('Importa CSV de Notion a Backtesting aunque el archivo no tenga columna de entorno', () => {
+  const result = preview(fixture('notion-backtesting.csv'), 'backtest');
+
+  assert.equal(result.format, 'notion');
+  assert.equal(result.rowCount, 1);
+  assert.equal(result.validCount, 1);
+  assert.equal(result.rejectedCount, 0);
+  assert.equal(result.rows[0].trade.sourceType, 'backtest');
+  assert.equal(result.rows[0].trade.entryDate, '2026-02-12T09:32');
+  assert.equal(result.rows[0].trade.rMultiple, 2);
+  assert.equal(result.rows[0].trade.plannedRR, 0, 'No debe inferir R planificado a partir del R realizado');
+  assert.deepEqual(result.rows[0].trade.pdArrays, ['Breaker Block']);
+  assert.equal(result.rows[0].trade.psychologyTag, 'FOMO (Perseguir Precio)');
+  assert.ok(result.rows[0].trade.notes.startsWith('Entrada desde nivel documentado'));
+  assert.equal(result.rows[0].trade.netPnl, 0, 'No debe inventar P&L monetario a partir de R');
+});
+
+test('Importa columnas conocidas de TradingView a Real y conserva valores explícitos', () => {
+  const result = preview(fixture('tradingview-real.csv'), 'real');
+  const trade = result.rows[0].trade;
+
+  assert.equal(result.format, 'tradingview');
+  assert.equal(result.validCount, 1);
+  assert.equal(trade.sourceType, 'real');
+  assert.equal(trade.direction, 'Short');
+  assert.equal(trade.entryPrice, 21450);
+  assert.equal(trade.exitPrice, 21400);
+  assert.equal(trade.rMultiple, -1.25);
+  assert.equal(trade.netPnl, -125);
+  assert.equal(trade.commission, 2);
+});
+
+test('Importa CSV Notion a Demo sin confundir Environment con un campo obligatorio del archivo', () => {
+  const result = preview(fixture('notion-demo.csv'), 'demo');
+
+  assert.equal(result.validCount, 1);
+  assert.equal(result.rows[0].trade.sourceType, 'demo');
+  assert.equal(result.rows[0].trade.rMultiple, 1.5);
+  assert.deepEqual(result.rows[0].trade.pdArrays, ['Key Level']);
+});
+
+test('Rechaza registros incompletos sin fecha, instrumento, dirección o resultado verificable', () => {
+  const result = preview(fixture('incomplete.csv'), 'real');
+
+  assert.equal(result.rowCount, 1);
+  assert.equal(result.validCount, 0);
+  assert.equal(result.rejectedCount, 1);
+  assert.equal(result.canImport, false);
+  assert.ok(result.rows[0].messages.some((message) => /resultado/i.test(message)));
+});
+
+test('Rechaza filas con número de celdas distinto para evitar desplazar columnas', () => {
+  const result = preview(
+    'Date,Symbol,Side,R,Notes\n2026-02-11T09:40,NAS100,Long,1R,nota,celda extra',
+    'real'
+  );
+
+  assert.equal(result.rejectedCount, 1);
+  assert.equal(result.validCount, 0);
+  assert.match(result.rows[0].messages[0], /evitar desplazamientos/i);
+});
+
+test('Cuenta duplicados internos y contra historial existente sin reemplazar operaciones', () => {
+  const allRows = preview(fixture('duplicates.csv'), 'backtest');
+  const first = allRows.rows[0].trade;
+  const withExisting = preview(fixture('duplicates.csv'), 'backtest', { existingTrades: [first] });
+
+  assert.equal(allRows.validCount, 1);
+  assert.equal(allRows.duplicateCount, 1);
+  assert.equal(withExisting.validCount, 0);
+  assert.equal(withExisting.duplicateCount, 2);
+  assert.equal(withExisting.tradesToImport.length, 0);
+});
+
+test('Detecta semicolon, coma decimal, comillas multilínea y conserva hora con zona sin desplazarla', () => {
+  const csvText = fixture('mixed-format.csv');
+  const detection = detectCsvFormat(csvText);
+  const result = preview(csvText, 'backtest');
+  const trade = result.rows[0].trade;
+
+  assert.equal(detection.delimiter, ';');
+  assert.equal(result.format, 'notion');
+  assert.equal(result.validCount, 1);
+  assert.equal(trade.rMultiple, 1.25);
+  assert.equal(trade.entryDate, '2026-02-17T09:37');
+  assert.match(trade.notes, /Primera línea\nsegunda línea; con separador/);
+  assert.ok(result.rows[0].messages.some((message) => /zona horaria/i.test(message)));
+  assert.match(trade.notes, /2026-02-17T09:37:00-05:00/);
+});
+
+test('Permite mapear manualmente campos desconocidos del CSV a campos Martin OS', () => {
+  const csvText = fixture('manual-mapping.csv');
+  const detection = detectCsvFormat(csvText);
+  const mappings = suggestCsvColumnMappings(detection.headers);
+  mappings['Momento de entrada'] = 'entryDate';
+  mappings['Contrato'] = 'symbol';
+  mappings['Sentido'] = 'direction';
+  mappings['Resultado observado'] = 'rMultiple';
+  mappings['Mi modelo propio'] = 'model';
+  mappings['Diario'] = 'notes';
+  const result = buildCsvImportPreview({
+    csvText,
+    environment: 'backtest',
+    accountId,
+    mappings,
+    existingTrades: [],
+  });
+
+  assert.equal(result.validCount, 1);
+  assert.equal(result.rows[0].trade.symbol, 'NAS100');
+  assert.equal(result.rows[0].trade.direction, 'Long');
+  assert.equal(result.rows[0].trade.rMultiple, 2);
+  assert.deepEqual(result.rows[0].trade.pdArrays, ['Key Level']);
+  assert.ok(result.rows[0].trade.notes.startsWith('Setup revisado'));
+});
+
+test('Rechaza fechas ambiguas y no convierte a 09:30 una fecha sin hora', () => {
+  const ambiguous = preview(
+    'Date,Symbol,Side,R-Multiple,Killzone\n02/03/2026,NAS100,Long,1R,NY Open 09:30 AM (09:30-10:30)',
+    'real'
+  );
+  const dateOnly = preview(
+    'Date,Symbol,Side,R-Multiple,Killzone\n2026-02-20,NAS100,Long,1R,NY Mid-Morning (10:30-12:00)',
+    'real'
+  );
+
+  assert.equal(ambiguous.rejectedCount, 1);
+  assert.ok(ambiguous.rows[0].messages.some((message) => /ambigua/i.test(message)));
+  assert.equal(dateOnly.validCount, 1);
+  assert.equal(dateOnly.rows[0].trade.entryDate, '2026-02-20');
+});
+
+test('No inventa un modelo ICT ni una etiqueta psicológica desconocidos; conserva sus textos originales', () => {
+  const result = preview(
+    'Date,Symbol,Side,R,Model,Psychology\n2026-02-21T09:40:00,NAS100,Long,1R,My Proprietary Setup,High Conviction',
+    'demo'
+  );
+  const trade = result.rows[0].trade;
+
+  assert.equal(result.validCount, 1);
+  assert.deepEqual(trade.pdArrays, []);
+  assert.equal(trade.psychologyTag, 'Sin clasificar');
+  assert.match(trade.notes, /My Proprietary Setup/);
+  assert.match(trade.notes, /High Conviction/);
+  assert.ok(result.rows[0].messages.length >= 2);
+});
+
+test('Bloquea entorno explícito contradictorio hasta que la fila quede revisada', () => {
+  const csvText = fixture('notion-demo.csv');
+  const blocked = preview(csvText, 'backtest');
+  const reviewed = preview(csvText, 'backtest', { reviewedConflictRows: [2] });
+
+  assert.equal(blocked.conflictCount, 1);
+  assert.equal(blocked.canImport, false);
+  assert.equal(blocked.tradesToImport.length, 0);
+  assert.equal(reviewed.conflictCount, 1);
+  assert.equal(reviewed.unreviewedConflictCount, 0);
+  assert.equal(reviewed.canImport, true);
+  assert.equal(reviewed.tradesToImport[0].sourceType, 'backtest');
+});
+
+test('La importación mantiene entornos segregados en estadísticas y contexto del Analista IA', () => {
+  const imported = [
+    ...preview(fixture('notion-backtesting.csv'), 'backtest').tradesToImport,
+    ...preview(fixture('tradingview-real.csv'), 'real').tradesToImport,
+    ...preview(fixture('notion-demo.csv'), 'demo').tradesToImport,
+  ];
+  const comparison = calculateBacktestVsRealComparison(imported);
+  const aiContext = buildAnalystGroundingContext(imported, 'demo');
+
+  assert.equal(comparison.backtestCohort.totalTrades, 1);
+  assert.equal(comparison.realCohort.totalTrades, 1);
+  assert.equal(aiContext.sampleSummary.totalTrades, 1);
+  assert.equal(aiContext.sampleSummary.validRTrades, 1);
+  assert.match(aiContext.systemPrompt, /ENTORNO ACTIVO ANALIZADO: DEMO/);
+  assert.match(aiContext.systemPrompt, /\+1\.50R/);
+});
+
+test('El archivo CSV se puede restaurar dentro del backup v3 sin cambiar su contrato', () => {
+  const trade = preview(fixture('notion-backtesting.csv'), 'backtest').tradesToImport[0];
+  assert.equal(validateBackupPayload({
+    version: '3.0',
+    exportedAt: '2026-02-20T00:00:00.000Z',
+    trades: [trade],
+    accounts: [],
+    playbooks: [],
+    dailyNotes: {},
+  }), true);
+});

@@ -27,6 +27,7 @@ interface SidebarProps {
   setActiveTab: (tab: ActiveTab) => void;
   isMobileOpen: boolean;
   onCloseMobile: () => void;
+  onOpenCsvImport: () => void;
   onShowDedication?: () => void;
 }
 
@@ -35,32 +36,19 @@ export function Sidebar({
   setActiveTab,
   isMobileOpen,
   onCloseMobile,
+  onOpenCsvImport,
   onShowDedication,
 }: SidebarProps) {
   const {
     trades,
     theme,
-    importCSV,
     exportBackup,
     importBackup,
     clearAllTrades,
     loadDemoTrades,
   } = useTrading();
 
-  const csvInputRef = useRef<HTMLInputElement | null>(null);
   const jsonInputRef = useRef<HTMLInputElement | null>(null);
-
-  const handleCSVChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      const count = importCSV(evt.target?.result as string);
-      alert(`Se importaron ${count} operaciones correctamente.`);
-    };
-    reader.readAsText(file);
-    e.target.value = '';
-  };
 
   const handleJSONChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -88,13 +76,6 @@ export function Sidebar({
         />
       )}
       <aside className={`fixed inset-y-0 left-0 z-40 flex h-screen w-72 shrink-0 flex-col justify-between border-r border-white/[0.08] bg-[#09090B] select-none transition-transform duration-200 md:sticky md:top-0 md:z-20 md:w-64 md:translate-x-0 ${isMobileOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-      <input
-        type="file"
-        accept=".csv"
-        ref={csvInputRef}
-        onChange={handleCSVChange}
-        className="hidden"
-      />
       <input
         type="file"
         accept=".json"
@@ -131,7 +112,7 @@ export function Sidebar({
         <div className="p-4">
           <div className="grid grid-cols-3 gap-1.5">
             <button
-              onClick={() => csvInputRef.current?.click()}
+              onClick={onOpenCsvImport}
               className="py-1.5 px-2 rounded-lg bg-zinc-900/80 hover:bg-zinc-800 border border-white/[0.06] text-zinc-400 hover:text-zinc-100 font-semibold text-[10px] flex flex-col items-center gap-0.5 cursor-pointer transition-colors"
               title="Importar CSV de Notion o TradingView"
             >

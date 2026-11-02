@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useTrading } from '@/context/TradingContext';
 import type { Trade } from '@/types/trading';
 import {
@@ -33,7 +33,6 @@ import {
   Filter,
   BarChart2,
   HelpCircle,
-  Upload,
   ArrowRightLeft,
   Scale,
   ShieldAlert,
@@ -41,13 +40,14 @@ import {
 
 interface AnalyticsViewProps {
   onInspectTrade: (trade: Trade) => void;
+  onOpenCsvImport: () => void;
 }
 
 type MainAnalyticsTab = 'edge_v2' | 'backtest_vs_real';
 type DimensionTab = 'duration' | 'weekday' | 'symbol' | 'psychology';
 
-export function AnalyticsView({ onInspectTrade }: AnalyticsViewProps) {
-  const { trades, playbooks, theme, importBacktestCSV } = useTrading();
+export function AnalyticsView({ onInspectTrade, onOpenCsvImport }: AnalyticsViewProps) {
+  const { trades, playbooks, theme } = useTrading();
 
   const [mainTab, setMainTab] = useState<MainAnalyticsTab>('edge_v2');
   const [filters, setFilters] = useState<AnalyticsFilters>(INITIAL_ANALYTICS_FILTERS);
@@ -56,13 +56,6 @@ export function AnalyticsView({ onInspectTrade }: AnalyticsViewProps) {
 
   // Backtest vs Real drill-down environment filter
   const [bvrFilterEnv, setBvrFilterEnv] = useState<'All' | 'real' | 'backtest' | 'demo' | 'unclassified'>('All');
-
-  // Import feedback
-  const [importNotification, setImportNotification] = useState<{
-    type: 'success' | 'warning' | 'error';
-    message: string;
-  } | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Available symbols for the filter dropdown
   const availableSymbols = useMemo(() => {
@@ -162,51 +155,6 @@ export function AnalyticsView({ onInspectTrade }: AnalyticsViewProps) {
     } else {
       setSelectedCohort(cohort);
     }
-  };
-
-  const handleBacktestCSVUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const text = event.target?.result as string;
-        if (!text || text.trim() === '') {
-          setImportNotification({
-            type: 'error',
-            message: 'El archivo CSV seleccionado está vacío.',
-          });
-          return;
-        }
-        const count = importBacktestCSV(text);
-        if (count > 0) {
-          setImportNotification({
-            type: 'success',
-            message: `Se importaron exitosamente ${count} operaciones de backtesting sin duplicados.`,
-          });
-        } else {
-          setImportNotification({
-            type: 'warning',
-            message: 'No se importaron nuevas operaciones (posibles duplicados o formato no compatible).',
-          });
-        }
-      } catch (err) {
-        setImportNotification({
-          type: 'error',
-          message: `Error al procesar el archivo CSV: ${err instanceof Error ? err.message : 'desconocido'}`,
-        });
-      }
-    };
-    reader.onerror = () => {
-      setImportNotification({
-        type: 'error',
-        message: 'Error al leer el archivo en el navegador.',
-      });
-    };
-    reader.readAsText(file);
-    // Reset file input value so user can re-upload if needed
-    e.target.value = '';
   };
 
   return (
@@ -741,44 +689,15 @@ export function AnalyticsView({ onInspectTrade }: AnalyticsViewProps) {
 
               {/* Import Backtest CSV Button */}
               <div className="flex items-center gap-2">
-                <input
-                  type="file"
-                  accept=".csv"
-                  ref={fileInputRef}
-                  onChange={handleBacktestCSVUpload}
-                  className="hidden"
-                />
                 <button
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={onOpenCsvImport}
                   className="px-3.5 py-2 rounded-xl text-xs font-bold bg-violet-600/20 text-violet-300 border border-violet-500/30 hover:bg-violet-600/30 transition-all flex items-center gap-2 cursor-pointer shadow-sm"
-                  title="Importar archivo CSV asignando entorno Backtest con prevención de duplicados"
+                  title="Importar CSV y seleccionar entorno en el asistente"
                 >
-                  <Upload className="w-3.5 h-3.5" />
-                  Importar CSV de Backtesting
+                  Importar historial CSV
                 </button>
               </div>
             </div>
-
-            {/* Notification Banner */}
-            {importNotification && (
-              <div
-                className={`p-3 rounded-xl border text-xs flex items-center justify-between gap-2 transition-all ${
-                  importNotification.type === 'success'
-                    ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
-                    : importNotification.type === 'warning'
-                    ? 'bg-amber-500/10 border-amber-500/20 text-amber-300'
-                    : 'bg-rose-500/10 border-rose-500/20 text-rose-300'
-                }`}
-              >
-                <span>{importNotification.message}</span>
-                <button
-                  onClick={() => setImportNotification(null)}
-                  className="text-zinc-400 hover:text-white px-2 py-0.5 rounded cursor-pointer"
-                >
-                  ✕
-                </button>
-              </div>
-            )}
 
             {/* Cohort Population Counters */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
