@@ -66,15 +66,16 @@ export function buildAnalystGroundingContext(
   };
   tradeLookup: Map<string, Trade>;
 } {
+  const eligibleTrades = trades.filter(isTradeIncludedInAggregates);
   const tradeLookup = new Map<string, Trade>();
-  for (const t of trades) {
+  for (const t of eligibleTrades) {
     tradeLookup.set(t.id, t);
   }
 
   // Filter strictly by requested environment. Real is default.
   // Never merge or consolidate Real with Backtesting into a single aggregate.
-  const filteredTrades = trades.filter((t) => (t.sourceType || 'unclassified') === targetEnv);
-  const validTrades = filteredTrades.filter(isTradeIncludedInAggregates);
+  const filteredTrades = eligibleTrades.filter((t) => (t.sourceType || 'unclassified') === targetEnv);
+  const validTrades = filteredTrades;
   const validRTrades = validTrades.filter(hasValidRMultiple);
 
   // Cohort calculations for active target environment
@@ -84,13 +85,13 @@ export function buildAnalystGroundingContext(
   const psychologyBreakdown = calculatePsychologyBreakdown(filteredTrades);
 
   // Separate, independent cohorts for Real vs Backtest comparison
-  const backtestVsReal = calculateBacktestVsRealComparison(trades as Trade[]);
+  const backtestVsReal = calculateBacktestVsRealComparison(eligibleTrades as Trade[]);
 
   // Count by environment across entire platform
-  const realCount = trades.filter((t) => (t.sourceType || 'unclassified') === 'real').length;
-  const backtestCount = trades.filter((t) => t.sourceType === 'backtest').length;
-  const demoCount = trades.filter((t) => t.sourceType === 'demo').length;
-  const unclassifiedCount = trades.filter((t) => !t.sourceType || t.sourceType === 'unclassified').length;
+  const realCount = eligibleTrades.filter((t) => (t.sourceType || 'unclassified') === 'real').length;
+  const backtestCount = eligibleTrades.filter((t) => t.sourceType === 'backtest').length;
+  const demoCount = eligibleTrades.filter((t) => t.sourceType === 'demo').length;
+  const unclassifiedCount = eligibleTrades.filter((t) => !t.sourceType || t.sourceType === 'unclassified').length;
 
   // Format exemplar trades (strictly capped to 5 most recent trades to preserve token budget)
   const sortedExemplars = [...validTrades]

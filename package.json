@@ -8,12 +8,13 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --test tests/v1a-certification.test.mjs tests/v1b-simplified-registration.test.mjs tests/v1b-financial-audit.test.mjs tests/v2-edge-analytics.test.mjs tests/v3-backtesting-vs-real.test.mjs tests/v4a-monte-carlo.test.mjs tests/v4b-ai-analyst.test.mjs tests/v4b-security-audit.test.mjs",
+    "test": "node --experimental-strip-types --test --test-concurrency=1 tests/v1a-certification.test.mjs tests/v1b-simplified-registration.test.mjs tests/v1b-financial-audit.test.mjs tests/v2-edge-analytics.test.mjs tests/v3-backtesting-vs-real.test.mjs tests/v4a-monte-carlo.test.mjs tests/v4b-ai-analyst.test.mjs tests/v4b-security-audit.test.mjs tests/v5-csv-import.test.mjs",
     "test:v1b": "node --experimental-strip-types --test tests/v1b-simplified-registration.test.mjs tests/v1b-financial-audit.test.mjs",
     "test:v2": "node --experimental-strip-types --test tests/v2-edge-analytics.test.mjs",
     "test:v3": "node --experimental-strip-types --test tests/v3-backtesting-vs-real.test.mjs",
     "test:v4": "node --experimental-strip-types --test tests/v4a-monte-carlo.test.mjs",
-    "test:v4b": "node --experimental-strip-types --test tests/v4b-ai-analyst.test.mjs tests/v4b-security-audit.test.mjs"
+    "test:v4b": "node --experimental-strip-types --test tests/v4b-ai-analyst.test.mjs tests/v4b-security-audit.test.mjs",
+    "test:v5": "node --experimental-strip-types --test --test-concurrency=1 tests/v5-csv-import.test.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",
